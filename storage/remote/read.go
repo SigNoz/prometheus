@@ -69,8 +69,8 @@ func (q *querier) Select(p *storage.SelectParams, matchers ...*labels.Matcher) (
 	remoteReadGauge.Inc()
 	defer remoteReadGauge.Dec()
 
-	res, err := q.client.Read(q.ctx, query)
-	// res, err := q.client.ch.Read(q.ctx, query)
+	// res, err := q.client.Read(q.ctx, query)
+	res, err := q.client.ch.Read(q.ctx, query)
 	if err != nil {
 		return nil, err
 	}
