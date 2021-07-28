@@ -21,7 +21,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/prometheus/prompb"
@@ -31,12 +30,12 @@ import (
 type Storage interface {
 	// Read runs queries in the storage and returns the same amount of matrixes.
 	// Event if they are empty, they must be present in the returned slice.
-	Read(context.Context, []Query) (*prompb.ReadResponse, error)
+	Read(context.Context, *prompb.Query) (*prompb.QueryResult, error)
 
 	// // Write puts data into storage.
 	// Write(context.Context, *prompb.WriteRequest) error
 
-	prometheus.Collector
+	// prometheus.Collector
 }
 
 // Query represents query against stored data.

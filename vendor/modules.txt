@@ -12,6 +12,18 @@ github.com/Azure/go-autorest/autorest/azure
 github.com/Azure/go-autorest/autorest/date
 github.com/Azure/go-autorest/autorest/to
 github.com/Azure/go-autorest/autorest/validation
+# github.com/ClickHouse/clickhouse-go v1.4.5
+## explicit
+github.com/ClickHouse/clickhouse-go
+github.com/ClickHouse/clickhouse-go/lib/binary
+github.com/ClickHouse/clickhouse-go/lib/cityhash102
+github.com/ClickHouse/clickhouse-go/lib/column
+github.com/ClickHouse/clickhouse-go/lib/data
+github.com/ClickHouse/clickhouse-go/lib/leakypool
+github.com/ClickHouse/clickhouse-go/lib/lz4
+github.com/ClickHouse/clickhouse-go/lib/protocol
+github.com/ClickHouse/clickhouse-go/lib/types
+github.com/ClickHouse/clickhouse-go/lib/writebuffer
 # github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc
 ## explicit
 github.com/alecthomas/template
@@ -54,6 +66,8 @@ github.com/beorn7/perks/quantile
 # github.com/cespare/xxhash v0.0.0-20161118035902-4a94f899c20b
 ## explicit
 github.com/cespare/xxhash
+# github.com/cloudflare/golz4 v0.0.0-20150217214814-ef862a3cdc58
+github.com/cloudflare/golz4
 # github.com/cockroachdb/cmux v0.0.0-20170110192607-30d10be49292
 ## explicit
 github.com/cockroachdb/cmux
@@ -266,6 +280,9 @@ github.com/shurcooL/httpfs/vfsutil
 # github.com/shurcooL/vfsgen v0.0.0-20180711163814-62bca832be04
 ## explicit
 github.com/shurcooL/vfsgen
+# github.com/sirupsen/logrus v1.8.1
+## explicit
+github.com/sirupsen/logrus
 # github.com/spf13/pflag v1.0.0
 ## explicit
 # github.com/stretchr/testify v1.5.1

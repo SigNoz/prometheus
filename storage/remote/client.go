@@ -30,6 +30,8 @@ import (
 
 	config_util "github.com/prometheus/common/config"
 	"github.com/prometheus/prometheus/prompb"
+	"github.com/prometheus/prometheus/storage/base"
+	"github.com/prometheus/prometheus/storage/clickhouse"
 )
 
 const maxErrMsgLen = 256
@@ -40,6 +42,7 @@ type Client struct {
 	url     *config_util.URL
 	client  *http.Client
 	timeout time.Duration
+	ch      base.Storage
 }
 
 // ClientConfig configures a Client.
@@ -55,12 +58,26 @@ func NewClient(index int, conf *ClientConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	params := &clickhouse.ClickHouseParams{
+		DSN:                  "tcp://127.0.0.1:9000/?database=prometheus2",
+		DropDatabase:         false,
+		MaxOpenConns:         75,
+		MaxTimeSeriesInQuery: 50,
+	}
+
+	ch, err := clickhouse.NewClickHouse(params)
+
+	// if err != nil {
+	// 	zap.S().Error("couldn't create instance of clickhouse")
+
+	// }
 
 	return &Client{
 		index:   index,
 		url:     conf.URL,
 		client:  httpClient,
 		timeout: time.Duration(conf.Timeout),
+		ch:      ch,
 	}, nil
 }
 

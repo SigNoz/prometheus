@@ -25,11 +25,11 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/kshvakov/clickhouse" // register SQL driver
+	_ "github.com/ClickHouse/clickhouse-go" // register SQL driver
 	"github.com/pkg/errors"
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/prometheus/prometheus/storage/base"
 )
@@ -48,18 +48,16 @@ type clickHouse struct {
 
 	timeSeriesRW sync.RWMutex
 	timeSeries   map[uint64][]*prompb.Label
-
-	mWrittenTimeSeries prometheus.Counter
 }
 
-type Params struct {
+type ClickHouseParams struct {
 	DSN                  string
 	DropDatabase         bool
 	MaxOpenConns         int
 	MaxTimeSeriesInQuery int
 }
 
-func New(params *Params) (base.Storage, error) {
+func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 	l := logrus.WithField("component", "clickhouse")
 
 	dsnURL, err := url.Parse(params.DSN)
@@ -72,35 +70,9 @@ func New(params *Params) (base.Storage, error) {
 	}
 
 	var queries []string
-	if params.DropDatabase {
-		queries = append(queries, fmt.Sprintf(`DROP DATABASE IF EXISTS %s`, database))
-	}
-	queries = append(queries, fmt.Sprintf(`CREATE DATABASE IF NOT EXISTS %s`, database))
 
-	queries = append(queries, fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.time_series (
-			date Date Codec(DoubleDelta, LZ4),
-			fingerprint UInt64 Codec(DoubleDelta, LZ4),
-			labels String Codec(ZSTD(5))
-		)
-		ENGINE = ReplacingMergeTree
-			PARTITION BY date
-			ORDER BY fingerprint`, database))
-
-	// change sampleRowSize is you change this table
-	queries = append(queries, fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.samples (
-			fingerprint UInt64 Codec(DoubleDelta, LZ4),
-			timestamp_ms Int64 Codec(DoubleDelta, LZ4),
-			value Float64 Codec(Gorilla, LZ4)
-		)
-		ENGINE = MergeTree
-			PARTITION BY toDate(timestamp_ms / 1000)
-			ORDER BY (fingerprint, timestamp_ms)`, database))
-
-	// connect without seting database, init schema
 	q := dsnURL.Query()
-	q.Del("database")
+
 	initURL := dsnURL
 	initURL.RawQuery = q.Encode()
 	initDB, err := sql.Open("clickhouse", initURL.String())
@@ -132,13 +104,6 @@ func New(params *Params) (base.Storage, error) {
 		maxTimeSeriesInQuery: params.MaxTimeSeriesInQuery,
 
 		timeSeries: make(map[uint64][]*prompb.Label, 8192),
-
-		mWrittenTimeSeries: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: namespace,
-			Subsystem: subsystem,
-			Name:      "written_time_series",
-			Help:      "Number of written time series.",
-		}),
 	}
 
 	go func() {
@@ -201,14 +166,6 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	}
 }
 
-func (ch *clickHouse) Describe(c chan<- *prometheus.Desc) {
-	ch.mWrittenTimeSeries.Describe(c)
-}
-
-func (ch *clickHouse) Collect(c chan<- prometheus.Metric) {
-	ch.mWrittenTimeSeries.Collect(c)
-}
-
 type beginTxer interface {
 	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
@@ -260,9 +217,9 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows) ([]*prompb.TimeSeries, error) 
 		}
 
 		// add samples to current time series
-		ts.Samples = append(ts.Samples, &prompb.Sample{
-			TimestampMs: timestampMs,
-			Value:       value,
+		ts.Samples = append(ts.Samples, prompb.Sample{
+			Timestamp: timestampMs,
+			Value:     value,
 		})
 	}
 
@@ -367,53 +324,87 @@ func (ch *clickHouse) tempTableSamples(ctx context.Context, start, end int64, fi
 	return ch.scanSamples(rows)
 }
 
-func (ch *clickHouse) Read(ctx context.Context, queries []base.Query) (*prompb.ReadResponse, error) {
+// convertReadRequest converts protobuf read request into a slice of storage queries.
+func (ch *clickHouse) convertReadRequest(request *prompb.Query) base.Query {
+
+	q := base.Query{
+		Start:    model.Time(request.StartTimestampMs),
+		End:      model.Time(request.EndTimestampMs),
+		Matchers: make([]base.Matcher, len(request.Matchers)),
+	}
+
+	for j, m := range request.Matchers {
+		var t base.MatchType
+		switch m.Type {
+		case prompb.LabelMatcher_EQ:
+			t = base.MatchEqual
+		case prompb.LabelMatcher_NEQ:
+			t = base.MatchNotEqual
+		case prompb.LabelMatcher_RE:
+			t = base.MatchRegexp
+		case prompb.LabelMatcher_NRE:
+			t = base.MatchNotRegexp
+		default:
+			ch.l.Error("convertReadRequest: unexpected matcher %d", m.Type)
+		}
+
+		q.Matchers[j] = base.Matcher{
+			Type:  t,
+			Name:  m.Name,
+			Value: m.Value,
+		}
+	}
+
+	if request.Hints != nil {
+		ch.l.Warnf("Ignoring hint %+v for query %v.", *request.Hints, q)
+	}
+
+	return q
+}
+
+func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
 	// special case for {{job="rawsql", query="SELECT …"}} (start is ignored)
-	if len(queries) == 1 && len(queries[0].Matchers) == 2 {
-		var query string
+	if len(query.Matchers) == 2 {
 		var hasJob bool
-		for _, m := range queries[0].Matchers {
-			if m.Type == base.MatchEqual && m.Name == "job" && m.Value == "rawsql" {
+		var queryString string
+		for _, m := range query.Matchers {
+			if base.MatchType(m.Type) == base.MatchEqual && m.Name == "job" && m.Value == "rawsql" {
 				hasJob = true
 			}
-			if m.Type == base.MatchEqual && m.Name == "query" {
-				query = m.Value
+			if base.MatchType(m.Type) == base.MatchEqual && m.Name == "query" {
+				queryString = m.Value
 			}
 		}
-		if hasJob && query != "" {
-			return ch.readRawSQL(ctx, query, int64(queries[0].End))
+		if hasJob && queryString != "" {
+			return ch.readRawSQL(ctx, queryString, int64(query.EndTimestampMs))
 		}
 	}
 
-	res := &prompb.ReadResponse{
-		Results: make([]*prompb.QueryResult, len(queries)),
-	}
-	for i, q := range queries {
-		res.Results[i] = new(prompb.QueryResult)
+	convertedQuery := ch.convertReadRequest(query)
 
-		// find matching time series
-		fingerprints := make(map[uint64]struct{}, 64)
-		ch.timeSeriesRW.RLock()
-		for f, labels := range ch.timeSeries {
-			if q.Matchers.MatchLabels(labels) {
-				fingerprints[f] = struct{}{}
-			}
+	res := new(prompb.QueryResult)
+	// find matching time series
+	fingerprints := make(map[uint64]struct{}, 64)
+	ch.timeSeriesRW.RLock()
+	for f, labels := range ch.timeSeries {
+		if convertedQuery.Matchers.MatchLabels(labels) {
+			fingerprints[f] = struct{}{}
 		}
-		ch.timeSeriesRW.RUnlock()
-		if len(fingerprints) == 0 {
-			continue
-		}
-
-		sampleFunc := ch.querySamples
-		if len(fingerprints) > ch.maxTimeSeriesInQuery {
-			sampleFunc = ch.tempTableSamples
-		}
-		ts, err := sampleFunc(ctx, int64(q.Start), int64(q.End), fingerprints)
-		if err != nil {
-			return nil, err
-		}
-		res.Results[i].TimeSeries = ts
 	}
+	ch.timeSeriesRW.RUnlock()
+	if len(fingerprints) == 0 {
+		return res, nil
+	}
+
+	sampleFunc := ch.querySamples
+	if len(fingerprints) > ch.maxTimeSeriesInQuery {
+		sampleFunc = ch.tempTableSamples
+	}
+	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints)
+	if err != nil {
+		return nil, err
+	}
+	res.Timeseries = ts
 
 	return res, nil
 }

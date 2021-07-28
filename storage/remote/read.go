@@ -15,7 +15,6 @@ package remote
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
@@ -70,8 +69,8 @@ func (q *querier) Select(p *storage.SelectParams, matchers ...*labels.Matcher) (
 	remoteReadGauge.Inc()
 	defer remoteReadGauge.Dec()
 
-	fmt.Println("Before reading ...")
 	res, err := q.client.Read(q.ctx, query)
+	// res, err := q.client.ch.Read(q.ctx, query)
 	if err != nil {
 		return nil, err
 	}
