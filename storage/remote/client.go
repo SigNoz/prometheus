@@ -59,7 +59,7 @@ func NewClient(index int, conf *ClientConfig) (*Client, error) {
 		return nil, err
 	}
 	params := &clickhouse.ClickHouseParams{
-		DSN:                  "tcp://127.0.0.1:9000/?database=prometheus2",
+		DSN:                  "tcp://127.0.0.1:9000/?database=prometheus",
 		DropDatabase:         false,
 		MaxOpenConns:         75,
 		MaxTimeSeriesInQuery: 50,
