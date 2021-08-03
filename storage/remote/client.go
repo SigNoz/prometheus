@@ -58,8 +58,9 @@ func NewClient(index int, conf *ClientConfig) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	params := &clickhouse.ClickHouseParams{
-		DSN:                  "tcp://127.0.0.1:9000/?database=prometheus",
+		DSN:                  conf.URL.String(),
 		DropDatabase:         false,
 		MaxOpenConns:         75,
 		MaxTimeSeriesInQuery: 50,
@@ -67,10 +68,9 @@ func NewClient(index int, conf *ClientConfig) (*Client, error) {
 
 	ch, err := clickhouse.NewClickHouse(params)
 
-	// if err != nil {
-	// 	zap.S().Error("couldn't create instance of clickhouse")
-
-	// }
+	if err != nil {
+		return nil, err
+	}
 
 	return &Client{
 		index:   index,
