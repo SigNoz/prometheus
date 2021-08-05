@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+
 	_ "github.com/ClickHouse/clickhouse-go" // register SQL driver
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -41,7 +43,7 @@ const (
 
 // clickHouse implements storage interface for the ClickHouse.
 type clickHouse struct {
-	db                   *sql.DB
+	db                   *sqlx.DB
 	l                    *logrus.Entry
 	database             string
 	maxTimeSeriesInQuery int
@@ -75,8 +77,12 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 
 	initURL := dsnURL
 	initURL.RawQuery = q.Encode()
-	initDB, err := sql.Open("clickhouse", initURL.String())
+
+	l.Debug("initURL: ", initURL.String())
+	initDB, err := sqlx.Open("clickhouse", initURL.String())
+
 	if err != nil {
+		l.Debug("Error in connecting using initURL")
 		return nil, err
 	}
 	defer initDB.Close()
@@ -88,9 +94,11 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 		}
 	}
 
+	l.Debug("DSN: ", params.DSN)
 	// reconnect to created database
-	db, err := sql.Open("clickhouse", params.DSN)
+	db, err := sqlx.Open("clickhouse", params.DSN)
 	if err != nil {
+		l.Debug("Error in connecting using DSN")
 		return nil, err
 	}
 	db.SetConnMaxLifetime(0)

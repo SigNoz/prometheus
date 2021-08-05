@@ -37,6 +37,7 @@ require (
 	github.com/hashicorp/serf v0.8.1-0.20161007004122-1d4fa605f6ff // indirect
 	github.com/influxdata/influxdb v1.2.3-0.20170331210902-15e594fc09f1
 	github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7 // indirect
+	github.com/jmoiron/sqlx v1.3.4 // indirect
 	github.com/json-iterator/go v0.0.0-20180612202835-f2b4162afba3
 	github.com/julienschmidt/httprouter v1.1.1-0.20150905172533-109e267447e9 // indirect
 	github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515 // indirect
