@@ -315,7 +315,7 @@ func (ch *clickHouse) tempTableSamples(ctx context.Context, start, end int64, fi
 	query = fmt.Sprintf(`
 			SELECT fingerprint, timestamp_ms, value
 				FROM %s.samples
-				ANY INNER JOIN %s USING fingerprint
+				INNER JOIN %s USING fingerprint
 				WHERE timestamp_ms >= ? AND timestamp_ms <= ?
 				ORDER BY fingerprint, timestamp_ms`,
 		ch.database, tableName,
@@ -408,7 +408,9 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	if len(fingerprints) > ch.maxTimeSeriesInQuery {
 		sampleFunc = ch.tempTableSamples
 	}
+
 	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints)
+
 	if err != nil {
 		return nil, err
 	}

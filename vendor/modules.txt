@@ -183,6 +183,10 @@ github.com/influxdata/influxdb/pkg/escape
 # github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7
 ## explicit
 github.com/jmespath/go-jmespath
+# github.com/jmoiron/sqlx v1.3.4
+## explicit
+github.com/jmoiron/sqlx
+github.com/jmoiron/sqlx/reflectx
 # github.com/json-iterator/go v0.0.0-20180612202835-f2b4162afba3
 ## explicit
 github.com/json-iterator/go
