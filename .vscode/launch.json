@@ -11,7 +11,7 @@
             "mode": "debug",
             "program": "${workspaceRoot}/cmd/prometheus",
             "args": [
-                "--config.file=${workspaceRoot}/documentation/examples/prometheus-clickhouse.yml",
+                "--config.file=${workspaceRoot}/documentation/examples/prometheus.yml",
                 "--storage.tsdb.path=${workspaceRoot}/data",
                 "--storage.tsdb.retention=5m",
                 "--storage.tsdb.min-block-duration=30s"
