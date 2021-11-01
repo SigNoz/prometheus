@@ -716,6 +716,110 @@ func (m *Manager) Update(interval time.Duration, files []string) error {
 	return nil
 }
 
+// Update the rule manager's state as the config requires. If
+// loading the new rules failed the old rule set is restored.
+func (m *Manager) UpdateFromByteArray(interval time.Duration, yamlByteArray []byte) error {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	groups, errs := m.LoadGroupsFromByteArray(interval, yamlByteArray)
+	if errs != nil {
+		for _, e := range errs {
+			level.Error(m.logger).Log("msg", "loading groups failed", "err", e)
+		}
+		return errors.New("error loading rules, previous rule set restored")
+	}
+	m.restored = true
+
+	var wg sync.WaitGroup
+
+	for _, newg := range groups {
+		wg.Add(1)
+
+		// If there is an old group with the same identifier, stop it and wait for
+		// it to finish the current iteration. Then copy it into the new group.
+		gn := groupKey(newg.name, newg.file)
+		oldg, ok := m.groups[gn]
+		delete(m.groups, gn)
+
+		go func(newg *Group) {
+			if ok {
+				oldg.stop()
+				newg.CopyState(oldg)
+			}
+			go func() {
+				// Wait with starting evaluation until the rule manager
+				// is told to run. This is necessary to avoid running
+				// queries against a bootstrapping storage.
+				<-m.block
+				newg.run(m.opts.Context)
+			}()
+			wg.Done()
+		}(newg)
+	}
+
+	// Stop remaining old groups.
+	for _, oldg := range m.groups {
+		oldg.stop()
+	}
+
+	wg.Wait()
+	m.groups = groups
+
+	return nil
+}
+
+// LoadGroups reads groups from a list of files.
+func (m *Manager) LoadGroupsFromByteArray(interval time.Duration, yamlByteArray []byte) (map[string]*Group, []error) {
+	groups := make(map[string]*Group)
+
+	shouldRestore := !m.restored
+
+	filename := "webAppEditor"
+
+	rgs, errs := rulefmt.Parse(yamlByteArray)
+	if errs != nil {
+		return nil, errs
+	}
+
+	for _, rg := range rgs.Groups {
+		itv := interval
+		if rg.Interval != 0 {
+			itv = time.Duration(rg.Interval)
+		}
+
+		rules := make([]Rule, 0, len(rg.Rules))
+		for _, r := range rg.Rules {
+			expr, err := promql.ParseExpr(r.Expr)
+			if err != nil {
+				return nil, []error{err}
+			}
+
+			if r.Alert != "" {
+				rules = append(rules, NewAlertingRule(
+					r.Alert,
+					expr,
+					time.Duration(r.For),
+					labels.FromMap(r.Labels),
+					labels.FromMap(r.Annotations),
+					m.restored,
+					log.With(m.logger, "alert", r.Alert),
+				))
+				continue
+			}
+			rules = append(rules, NewRecordingRule(
+				r.Record,
+				expr,
+				labels.FromMap(r.Labels),
+			))
+		}
+
+		groups[groupKey(rg.Name, filename)] = NewGroup(rg.Name, filename, itv, rules, shouldRestore, m.opts)
+	}
+
+	return groups, nil
+}
+
 // LoadGroups reads groups from a list of files.
 func (m *Manager) LoadGroups(interval time.Duration, filenames ...string) (map[string]*Group, []error) {
 	groups := make(map[string]*Group)
