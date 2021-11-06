@@ -1,11 +1,31 @@
 groups:
 - name: ExampleCPULoadGroup
   rules:
-  - alert: HighCpuLoad
-    expr: system_cpu_load_average_1m > 0.1
+  - alert: HighCpuLoad-test1
+    expr: system_cpu_load_average_1m > 0.01
     for: 0m
     labels:
       severity: warning
     annotations:
-      summary: High CPU load
-      description: "CPU load is > 0.1\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+      summary: High CPU load average 1m
+      description: "CPU load average 1m is > 0.01\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+
+  - alert: HighCpuLoad-test2
+    expr: system_cpu_load_average_5m > 0.5
+    for: 0m
+    labels:
+      severity: high
+    annotations:
+      summary: High CPU load average 5m
+      description: "CPU load  average 5m is > 0.5\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+
+  - alert: High RPS of Applications
+    expr: sum(rate(signoz_calls_total{span_kind="SPAN_KIND_SERVER"}[5m])) by (service_name) > 0.5
+    for: 0m
+    labels:
+      severity: medium
+    annotations:
+      summary: High RPS for service {{ $labels.service_name }}
+      description: "High RPS for services > 0.5\n  VALUE = {{ $value }}\n  LABELS = {{ $labels }}"
+
+      

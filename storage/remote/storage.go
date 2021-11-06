@@ -111,6 +111,7 @@ func (s *Storage) ApplyConfig(conf *config.Config) error {
 		if len(rrConf.RequiredMatchers) > 0 {
 			q = RequiredMatchersFilter(q, labelsToEqualityMatchers(rrConf.RequiredMatchers))
 		}
+		rrConf.ReadRecent = true
 		if !rrConf.ReadRecent {
 			q = PreferLocalStorageFilter(q, s.localStartTimeCallback)
 		}
