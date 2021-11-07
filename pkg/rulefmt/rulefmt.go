@@ -200,11 +200,13 @@ func Parse(content []byte) (*RuleGroups, []error) {
 
 // Parse parses and validates a set of rules.
 func ParseGroup(content []byte, groupName string) (*RuleGroup, []error) {
-	var group RuleGroup
-	if err := yaml.UnmarshalStrict(content, &group); err != nil {
+	group := RuleGroup{}
+	var rule Rule
+	if err := yaml.UnmarshalStrict(content, rule); err != nil {
 		return nil, []error{err}
 	}
 	group.Name = groupName
+	group.Rules = []Rule{rule}
 
 	groups := RuleGroups{}
 	groupArray := make([]RuleGroup, 0)
