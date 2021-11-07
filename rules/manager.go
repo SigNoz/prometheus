@@ -944,7 +944,7 @@ func (m *Manager) LoadAddedGroups(interval time.Duration, rule string, groupName
 		return nil, errs
 	}
 
-	customGroups := m.RuleGroups()
+	customGroups := m.RuleGroupsWithoutLock()
 	for _, group := range customGroups {
 
 		groups[groupKey(group.Name(), group.File())] = group
@@ -992,7 +992,7 @@ func (m *Manager) LoadDeletedGroups(interval time.Duration, groupName string) (m
 
 	filename := "webAppEditor"
 
-	customGroups := m.RuleGroups()
+	customGroups := m.RuleGroupsWithoutLock()
 	for _, group := range customGroups {
 
 		groups[groupKey(group.Name(), group.File())] = group
