@@ -198,6 +198,22 @@ func Parse(content []byte) (*RuleGroups, []error) {
 	return &groups, groups.Validate()
 }
 
+// Parse parses and validates a set of rules.
+func ParseGroup(content []byte, groupName string) (*RuleGroup, []error) {
+	var group RuleGroup
+	if err := yaml.UnmarshalStrict(content, &group); err != nil {
+		return nil, []error{err}
+	}
+	group.Name = groupName
+
+	groups := RuleGroups{}
+	groupArray := make([]RuleGroup, 0)
+	groupArray = append(groupArray, group)
+	groups.Groups = groupArray
+
+	return &group, groups.Validate()
+}
+
 // ParseFile reads and parses rules from a file.
 func ParseFile(file string) (*RuleGroups, []error) {
 	b, err := ioutil.ReadFile(file)

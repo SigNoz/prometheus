@@ -769,6 +769,65 @@ func (m *Manager) UpdateFromByteArray(interval time.Duration, yamlByteArray []by
 	return nil
 }
 
+func (m *Manager) UpdateGroupWithAction(interval time.Duration, rule string, groupName string, action string) error {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+
+	var groups map[string]*Group
+	var errs []error
+
+	if action == "add" {
+		groups, errs = m.LoadAddedGroups(interval, rule, groupName)
+	} else if action == "delete" {
+		groups, errs = m.LoadDeletedGroups(interval, groupName)
+	}
+
+	if errs != nil {
+		for _, e := range errs {
+			level.Error(m.logger).Log("msg", "loading groups failed", "err", e)
+		}
+		return errors.New("error loading rules, previous rule set restored")
+	}
+	m.restored = true
+
+	var wg sync.WaitGroup
+
+	for _, newg := range groups {
+		wg.Add(1)
+
+		// If there is an old group with the same identifier, stop it and wait for
+		// it to finish the current iteration. Then copy it into the new group.
+		gn := groupKey(newg.name, newg.file)
+		oldg, ok := m.groups[gn]
+		delete(m.groups, gn)
+
+		go func(newg *Group) {
+			if ok {
+				oldg.stop()
+				newg.CopyState(oldg)
+			}
+			go func() {
+				// Wait with starting evaluation until the rule manager
+				// is told to run. This is necessary to avoid running
+				// queries against a bootstrapping storage.
+				<-m.block
+				newg.run(m.opts.Context)
+			}()
+			wg.Done()
+		}(newg)
+	}
+
+	// Stop remaining old groups.
+	for _, oldg := range m.groups {
+		oldg.stop()
+	}
+
+	wg.Wait()
+	m.groups = groups
+
+	return nil
+}
+
 // LoadGroups reads groups from a list of files.
 func (m *Manager) LoadGroupsFromByteArray(interval time.Duration, yamlByteArray []byte) (map[string]*Group, []error) {
 	groups := make(map[string]*Group)
@@ -867,6 +926,79 @@ func (m *Manager) LoadGroups(interval time.Duration, filenames ...string) (map[s
 			groups[groupKey(rg.Name, fn)] = NewGroup(rg.Name, fn, itv, rules, shouldRestore, m.opts)
 		}
 	}
+
+	return groups, nil
+}
+
+// LoadGroups reads groups from a list of files.
+func (m *Manager) LoadAddedGroups(interval time.Duration, rule string, groupName string) (map[string]*Group, []error) {
+	groups := make(map[string]*Group)
+
+	shouldRestore := !m.restored
+
+	filename := "webAppEditor"
+
+	rg, errs := rulefmt.ParseGroup([]byte(rule), groupName)
+
+	if errs != nil {
+		return nil, errs
+	}
+
+	customGroups := m.RuleGroups()
+	for _, group := range customGroups {
+
+		groups[groupKey(group.Name(), group.File())] = group
+	}
+
+	itv := interval
+	if rg.Interval != 0 {
+		itv = time.Duration(rg.Interval)
+	}
+
+	rules := make([]Rule, 0, len(rg.Rules))
+	for _, r := range rg.Rules {
+		expr, err := promql.ParseExpr(r.Expr)
+		if err != nil {
+			return nil, []error{err}
+		}
+
+		if r.Alert != "" {
+			rules = append(rules, NewAlertingRule(
+				r.Alert,
+				expr,
+				time.Duration(r.For),
+				labels.FromMap(r.Labels),
+				labels.FromMap(r.Annotations),
+				m.restored,
+				log.With(m.logger, "alert", r.Alert),
+			))
+			continue
+		}
+		rules = append(rules, NewRecordingRule(
+			r.Record,
+			expr,
+			labels.FromMap(r.Labels),
+		))
+	}
+
+	groups[groupKey(rg.Name, filename)] = NewGroup(rg.Name, filename, itv, rules, shouldRestore, m.opts)
+
+	return groups, nil
+}
+
+// LoadGroups reads groups from a list of files.
+func (m *Manager) LoadDeletedGroups(interval time.Duration, groupName string) (map[string]*Group, []error) {
+	groups := make(map[string]*Group)
+
+	filename := "webAppEditor"
+
+	customGroups := m.RuleGroups()
+	for _, group := range customGroups {
+
+		groups[groupKey(group.Name(), group.File())] = group
+	}
+
+	delete(groups, groupKey(groupName, filename))
 
 	return groups, nil
 }
