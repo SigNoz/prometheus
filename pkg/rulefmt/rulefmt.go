@@ -202,7 +202,7 @@ func Parse(content []byte) (*RuleGroups, []error) {
 func ParseGroup(content []byte, groupName string) (*RuleGroup, []error) {
 	group := RuleGroup{}
 	var rule Rule
-	if err := yaml.UnmarshalStrict(content, rule); err != nil {
+	if err := yaml.UnmarshalStrict(content, &rule); err != nil {
 		return nil, []error{err}
 	}
 	group.Name = groupName
