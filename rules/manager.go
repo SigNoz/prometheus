@@ -743,6 +743,10 @@ func (m *Manager) EditGroup(interval time.Duration, rule string, groupName strin
 		// it to finish the current iteration. Then copy it into the new group.
 		gn := groupKey(newg.name, newg.file)
 		oldg, ok := m.groups[gn]
+		if !ok {
+			return errors.New("rule not found")
+		}
+
 		delete(m.groups, gn)
 
 		go func(newg *Group) {
