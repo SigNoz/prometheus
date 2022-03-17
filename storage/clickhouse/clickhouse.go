@@ -405,9 +405,9 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	}
 
 	sampleFunc := ch.querySamples
-	if len(fingerprints) > ch.maxTimeSeriesInQuery {
-		sampleFunc = ch.tempTableSamples
-	}
+	// if len(fingerprints) > ch.maxTimeSeriesInQuery {
+	// 	sampleFunc = ch.tempTableSamples
+	// }
 
 	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints)
 
