@@ -25,9 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jmoiron/sqlx"
+	"github.com/ClickHouse/clickhouse-go/v2" // register SQL driver
 
-	_ "github.com/ClickHouse/clickhouse-go" // register SQL driver
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
@@ -37,13 +36,12 @@ import (
 )
 
 const (
-	namespace = "promhouse"
 	subsystem = "clickhouse"
 )
 
 // clickHouse implements storage interface for the ClickHouse.
 type clickHouse struct {
-	db                   *sqlx.DB
+	db                   *sql.DB
 	l                    *logrus.Entry
 	database             string
 	maxTimeSeriesInQuery int
@@ -71,47 +69,37 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 		return nil, fmt.Errorf("database should be set in ClickHouse DSN")
 	}
 
-	var queries []string
-
-	q := dsnURL.Query()
-
-	initURL := dsnURL
-	initURL.RawQuery = q.Encode()
-
-	l.Debug("initURL: ", initURL.String())
-	initDB, err := sqlx.Open("clickhouse", initURL.String())
-
-	if err != nil {
-		l.Debug("Error in connecting using initURL")
-		return nil, err
+	options := &clickhouse.Options{
+		Addr: []string{dsnURL.Host},
 	}
-	defer initDB.Close()
-	for _, q := range queries {
-		q = strings.TrimSpace(q)
-		l.Infof("Executing:\n%s", q)
-		if _, err = initDB.Exec(q); err != nil {
-			return nil, err
+	if dsnURL.Query().Get("username") != "" {
+		auth := clickhouse.Auth{
+			// Database: "",
+			Username: dsnURL.Query().Get("username"),
+			Password: dsnURL.Query().Get("password"),
 		}
-	}
 
-	l.Debug("DSN: ", params.DSN)
-	// reconnect to created database
-	db, err := sqlx.Open("clickhouse", params.DSN)
+		options.Auth = auth
+	}
+	// fmt.Println(options)
+	initDB := clickhouse.OpenDB(options)
+
+	initDB.SetConnMaxIdleTime(2)
+	initDB.SetMaxOpenConns(params.MaxOpenConns)
+	initDB.SetConnMaxLifetime(0)
+
 	if err != nil {
-		l.Debug("Error in connecting using DSN")
+		fmt.Errorf("Could not connect to clickhouse: ", err)
 		return nil, err
 	}
-	db.SetConnMaxLifetime(0)
-	db.SetMaxIdleConns(2)
-	db.SetMaxOpenConns(params.MaxOpenConns)
 
 	ch := &clickHouse{
-		db:                   db,
+		db:                   initDB,
 		l:                    l,
 		database:             database,
 		maxTimeSeriesInQuery: params.MaxTimeSeriesInQuery,
 
-		timeSeries: make(map[uint64][]*prompb.Label, 8192),
+		timeSeries: make(map[uint64][]*prompb.Label, 262144),
 	}
 
 	go func() {
@@ -178,23 +166,6 @@ type beginTxer interface {
 	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
 }
 
-func inTransaction(ctx context.Context, txer beginTxer, f func(*sql.Tx) error) (err error) {
-	var tx *sql.Tx
-	if tx, err = txer.BeginTx(ctx, nil); err != nil {
-		err = errors.WithStack(err)
-		return
-	}
-	defer func() {
-		if err == nil {
-			err = errors.WithStack(tx.Commit())
-		} else {
-			tx.Rollback()
-		}
-	}()
-	err = f(tx)
-	return
-}
-
 func (ch *clickHouse) scanSamples(rows *sql.Rows) ([]*prompb.TimeSeries, error) {
 	// scan results
 	var res []*prompb.TimeSeries
@@ -243,88 +214,24 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows) ([]*prompb.TimeSeries, error) 
 }
 
 func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, fingerprints map[uint64]struct{}) ([]*prompb.TimeSeries, error) {
-	// prepare query string
-	placeholders := strings.Repeat("?, ", len(fingerprints))
+
+	var fingerprints_keys string
+	for f := range fingerprints {
+		fingerprints_keys += fmt.Sprintf("'%v',", f)
+	}
+	fingerprints_keys = fingerprints_keys[:len(fingerprints_keys)-1]
 	query := fmt.Sprintf(`
 		SELECT fingerprint, timestamp_ms, value
 			FROM %s.samples
-			WHERE fingerprint IN (%s) AND timestamp_ms >= ? AND timestamp_ms <= ?
-			ORDER BY fingerprint, timestamp_ms`,
-		ch.database, placeholders[:len(placeholders)-2], // cut last ", "
+			WHERE fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
+		ch.database, fingerprints_keys, start, end, // cut last ", "
 	)
 	query = strings.TrimSpace(query)
-	args := make([]interface{}, 0, len(fingerprints)+2)
-	for f := range fingerprints {
-		args = append(args, f)
-	}
-	args = append(args, start)
-	args = append(args, end)
-	ch.l.Debugf("%s %v", query, args)
 
-	// run query
-	rows, err := ch.db.Query(query, args...)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	defer rows.Close()
-	return ch.scanSamples(rows)
-}
-
-func (ch *clickHouse) tempTableSamples(ctx context.Context, start, end int64, fingerprints map[uint64]struct{}) ([]*prompb.TimeSeries, error) {
-	conn, err := ch.db.Conn(ctx)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	defer conn.Close()
-
-	// create temporary table
-	tableName := fmt.Sprintf("promhouse_%d", time.Now().UnixNano())
-	query := fmt.Sprintf(`
-		CREATE TEMPORARY TABLE %s (
-			fingerprint UInt64
-		)`, tableName)
-	query = strings.TrimSpace(query)
 	ch.l.Debugf("%s", query)
-	if _, err = conn.ExecContext(ctx, query); err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	// fill temporary table
-	err = inTransaction(ctx, conn, func(tx *sql.Tx) error {
-		query = fmt.Sprintf(`INSERT INTO %s (fingerprint) VALUES (?)`, tableName)
-		var stmt *sql.Stmt
-		var err error
-		if stmt, err = tx.PrepareContext(ctx, query); err != nil {
-			return errors.WithStack(err)
-		}
-
-		for f := range fingerprints {
-			// ch.l.Debugf("%s %v", query, f)
-			if _, err = stmt.ExecContext(ctx, f); err != nil {
-				return errors.WithStack(err)
-			}
-		}
-
-		return errors.WithStack(stmt.Close())
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// prepare query string
-	query = fmt.Sprintf(`
-			SELECT fingerprint, timestamp_ms, value
-				FROM %s.samples
-				INNER JOIN %s USING fingerprint
-				WHERE timestamp_ms >= ? AND timestamp_ms <= ?
-				ORDER BY fingerprint, timestamp_ms`,
-		ch.database, tableName,
-	)
-	query = strings.TrimSpace(query)
-	ch.l.Debugf("%s %v %v", query, start, end)
 
 	// run query
-	rows, err := conn.QueryContext(ctx, query, start, end)
+	rows, err := ch.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
