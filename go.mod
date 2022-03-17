@@ -5,7 +5,7 @@ go 1.14
 require (
 	github.com/Azure/azure-sdk-for-go v5.0.0-beta.0.20161028183111-bd73d950fa44+incompatible
 	github.com/Azure/go-autorest v10.8.1+incompatible
-	github.com/ClickHouse/clickhouse-go v1.4.5
+	github.com/ClickHouse/clickhouse-go/v2 v2.0.12
 	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
 	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
 	github.com/aws/aws-sdk-go v1.13.44-0.20180507225419-00862f899353
@@ -20,7 +20,7 @@ require (
 	github.com/go-kit/kit v0.4.1-0.20170517165212-6964666de57c
 	github.com/go-logfmt/logfmt v0.3.0 // indirect
 	github.com/go-stack/stack v1.5.4 // indirect
-	github.com/gogo/protobuf v0.0.0-20171123125729-971cbfd2e72b
+	github.com/gogo/protobuf v1.3.2
 	github.com/golang/glog v0.0.0-20210429001901-424d2337a529 // indirect
 	github.com/golang/snappy v0.0.0-20160529050041-d9eb7a3d35ec
 	github.com/google/btree v0.0.0-20180124185431-e89373fe6b4a // indirect
@@ -37,7 +37,7 @@ require (
 	github.com/hashicorp/serf v0.8.1-0.20161007004122-1d4fa605f6ff // indirect
 	github.com/influxdata/influxdb v1.2.3-0.20170331210902-15e594fc09f1
 	github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7 // indirect
-	github.com/jmoiron/sqlx v1.3.4
+	github.com/jmoiron/sqlx v1.3.4 // indirect
 	github.com/json-iterator/go v0.0.0-20180612202835-f2b4162afba3
 	github.com/julienschmidt/httprouter v1.1.1-0.20150905172533-109e267447e9 // indirect
 	github.com/kr/logfmt v0.0.0-20140226030751-b84e30acd515 // indirect
@@ -64,8 +64,8 @@ require (
 	github.com/shurcooL/vfsgen v0.0.0-20180711163814-62bca832be04
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/pflag v1.0.0 // indirect
-	github.com/stretchr/testify v1.5.1
-	golang.org/x/net v0.0.0-20200822124328-c89045814202
+	github.com/stretchr/testify v1.7.0
+	golang.org/x/net v0.0.0-20201021035429-f5854403a974
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	golang.org/x/time v0.0.0-20170424234030-8be79e1e0910
 	google.golang.org/api v0.0.0-20180506000402-20530fd5d65a
