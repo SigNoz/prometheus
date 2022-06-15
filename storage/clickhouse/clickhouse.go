@@ -115,7 +115,7 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	q := fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.time_series`, ch.database)
+	q := fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2`, ch.database)
 	for {
 		ch.timeSeriesRW.RLock()
 		timeSeries := make(map[uint64][]*prompb.Label, len(ch.timeSeries))
@@ -222,7 +222,7 @@ func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, finger
 	fingerprints_keys = fingerprints_keys[:len(fingerprints_keys)-1]
 	query := fmt.Sprintf(`
 		SELECT fingerprint, timestamp_ms, value
-			FROM %s.samples
+			FROM %s.samples_v2
 			WHERE fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
 		ch.database, fingerprints_keys, start, end, // cut last ", "
 	)
