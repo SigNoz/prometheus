@@ -213,22 +213,22 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows) ([]*prompb.TimeSeries, error) 
 	return res, nil
 }
 
-func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, fingerprints map[uint64]struct{}) ([]*prompb.TimeSeries, error) {
+func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, fingerprints map[uint64]struct{}, metricName string) ([]*prompb.TimeSeries, error) {
 
-	var fingerprints_keys string
+	var fingerprintsKeys string
 	for f := range fingerprints {
-		fingerprints_keys += fmt.Sprintf("'%v',", f)
+		fingerprintsKeys += fmt.Sprintf("'%v',", f)
 	}
-	fingerprints_keys = fingerprints_keys[:len(fingerprints_keys)-1]
+	fingerprintsKeys = fingerprintsKeys[:len(fingerprintsKeys)-1] // cut last ", "
 	query := fmt.Sprintf(`
 		SELECT fingerprint, timestamp_ms, value
 			FROM %s.samples_v2
-			WHERE fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
-		ch.database, fingerprints_keys, start, end, // cut last ", "
+			WHERE metric_name = '%s' AND fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
+		ch.database, metricName, fingerprintsKeys, start, end,
 	)
 	query = strings.TrimSpace(query)
 
-	ch.l.Debugf("%s", query)
+	ch.l.Debugf("Running query : %s", query)
 
 	// run query
 	rows, err := ch.db.QueryContext(ctx, query)
@@ -310,13 +310,19 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	if len(fingerprints) == 0 {
 		return res, nil
 	}
+	var metricName string
+	for _, matcher := range convertedQuery.Matchers {
+		if matcher.Name == "__name__" {
+			metricName = matcher.Value
+		}
+	}
 
 	sampleFunc := ch.querySamples
 	// if len(fingerprints) > ch.maxTimeSeriesInQuery {
 	// 	sampleFunc = ch.tempTableSamples
 	// }
 
-	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints)
+	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName)
 
 	if err != nil {
 		return nil, err
