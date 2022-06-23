@@ -152,7 +152,7 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 			}
 			ch.lastLoadedTimeStamp = time.Now().UnixMilli()
 			ch.timeSeriesRW.Unlock()
-			ch.l.Infof("Loaded %d new time series", len(timeSeries))
+			ch.l.Debugf("Loaded %d new time series", len(timeSeries))
 		} else {
 			ch.l.Error(err)
 		}
