@@ -46,8 +46,10 @@ type clickHouse struct {
 	database             string
 	maxTimeSeriesInQuery int
 
-	timeSeriesRW sync.RWMutex
-	timeSeries   map[uint64][]*prompb.Label
+	timeSeriesRW        sync.RWMutex
+	timeSeries          map[uint64][]*prompb.Label
+	lastLoadedTimeStamp int64
+	useClickHouseQuery  bool
 }
 
 type ClickHouseParams struct {
@@ -100,6 +102,7 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 		maxTimeSeriesInQuery: params.MaxTimeSeriesInQuery,
 
 		timeSeries: make(map[uint64][]*prompb.Label, 262144),
+		// useClickHouseQuery: true,
 	}
 
 	go func() {
@@ -115,15 +118,16 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	q := fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2`, ch.database)
+	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2 WHERE timestamp_ms >= %d`
 	for {
 		ch.timeSeriesRW.RLock()
 		timeSeries := make(map[uint64][]*prompb.Label, len(ch.timeSeries))
+		query := fmt.Sprintf(queryTmpl, ch.database, ch.lastLoadedTimeStamp)
 		ch.timeSeriesRW.RUnlock()
 
 		err := func() error {
-			ch.l.Debug(q)
-			rows, err := ch.db.Query(q)
+			ch.l.Debug(query)
+			rows, err := ch.db.Query(query)
 			if err != nil {
 				return err
 			}
@@ -143,12 +147,12 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 		}()
 		if err == nil {
 			ch.timeSeriesRW.Lock()
-			n := len(timeSeries) - len(ch.timeSeries)
 			for f, m := range timeSeries {
 				ch.timeSeries[f] = m
 			}
+			ch.lastLoadedTimeStamp = time.Now().UnixMilli()
 			ch.timeSeriesRW.Unlock()
-			ch.l.Debugf("Loaded %d existing time series, %d were unknown to this instance.", len(timeSeries), n)
+			ch.l.Infof("Loaded %d new time series", len(timeSeries))
 		} else {
 			ch.l.Error(err)
 		}
@@ -277,6 +281,54 @@ func (ch *clickHouse) convertReadRequest(request *prompb.Query) base.Query {
 	return q
 }
 
+func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName string) (string, error) {
+	var clickHouseQuery string
+	var conditions []string
+	conditions = append(conditions, fmt.Sprintf("metric_name = '%s'", metricName))
+	for _, m := range query.Matchers {
+		switch m.Type {
+		case prompb.LabelMatcher_EQ:
+			conditions = append(conditions, fmt.Sprintf("JSONExtractString(labels, '%s') = '%s'", m.Name, m.Value))
+		case prompb.LabelMatcher_NEQ:
+			conditions = append(conditions, fmt.Sprintf("JSONExtractString(labels, '%s') != '%s'", m.Name, m.Value))
+		case prompb.LabelMatcher_RE:
+			conditions = append(conditions, fmt.Sprintf("match(JSONExtractString(labels, '%s'), '%s')", m.Name, m.Value))
+		case prompb.LabelMatcher_NRE:
+			conditions = append(conditions, fmt.Sprintf("not match(JSONExtractString(labels, '%s'), '%s')", m.Name, m.Value))
+		default:
+			return "", fmt.Errorf("prepareClickHouseQuery: unexpected matcher %d", m.Type)
+		}
+	}
+	whereClause := strings.Join(conditions, " AND ")
+
+	clickHouseQuery = fmt.Sprintf(`SELECT fingerprint FROM %s.time_series_v2 WHERE %s`, ch.database, whereClause)
+	return clickHouseQuery, nil
+}
+
+func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string) (map[uint64]struct{}, error) {
+	// run query
+	rows, err := ch.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	// scan results
+	var fingerprint uint64
+	fingerprints := make(map[uint64]struct{})
+	for rows.Next() {
+		if err := rows.Scan(&fingerprint); err != nil {
+			return nil, err
+		}
+		fingerprints[fingerprint] = struct{}{}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return fingerprints, nil
+}
+
 func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
 	// special case for {{job="rawsql", query="SELECT …"}} (start is ignored)
 	if len(query.Matchers) == 2 {
@@ -297,24 +349,41 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 
 	convertedQuery := ch.convertReadRequest(query)
 
-	res := new(prompb.QueryResult)
-	// find matching time series
-	fingerprints := make(map[uint64]struct{}, 64)
-	ch.timeSeriesRW.RLock()
-	for f, labels := range ch.timeSeries {
-		if convertedQuery.Matchers.MatchLabels(labels) {
-			fingerprints[f] = struct{}{}
-		}
-	}
-	ch.timeSeriesRW.RUnlock()
-	if len(fingerprints) == 0 {
-		return res, nil
-	}
 	var metricName string
 	for _, matcher := range convertedQuery.Matchers {
 		if matcher.Name == "__name__" {
 			metricName = matcher.Value
 		}
+	}
+
+	var clickHouseQuery string
+	var fingerprints map[uint64]struct{}
+	var err error
+
+	if ch.useClickHouseQuery {
+		clickHouseQuery, err = ch.prepareClickHouseQuery(query, metricName)
+		if err != nil {
+			return nil, err
+		}
+		fingerprints, err = ch.fingerprintsForQuery(ctx, clickHouseQuery)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		fingerprints = make(map[uint64]struct{}, 64)
+		// find matching time series
+		ch.timeSeriesRW.RLock()
+		for f, labels := range ch.timeSeries {
+			if convertedQuery.Matchers.MatchLabels(labels) {
+				fingerprints[f] = struct{}{}
+			}
+		}
+		ch.timeSeriesRW.RUnlock()
+	}
+
+	res := new(prompb.QueryResult)
+	if len(fingerprints) == 0 {
+		return res, nil
 	}
 
 	sampleFunc := ch.querySamples
