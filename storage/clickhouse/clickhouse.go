@@ -161,7 +161,12 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 		if err == nil {
 			ch.timeSeriesRW.Lock()
 			for metricName, fingerprintsMap := range timeSeries {
-				ch.timeSeries[metricName] = fingerprintsMap
+				for fingerprint, labels := range fingerprintsMap {
+					if _, ok := ch.timeSeries[metricName]; !ok {
+						ch.timeSeries[metricName] = make(map[uint64][]*prompb.Label)
+					}
+					ch.timeSeries[metricName][fingerprint] = labels
+				}
 			}
 			ch.lastLoadedTimeStamp = time.Now().UnixMilli()
 			ch.timeSeriesRW.Unlock()
