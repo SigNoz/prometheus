@@ -127,7 +127,7 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	for {
 		timeSeries := make(map[string]map[uint64][]*prompb.Label)
 		newSeriesCount := 0
-		lastLoadedTimeStamp := time.Now().UnixMilli()
+		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
 
 		err := func() error {
 			query := fmt.Sprintf(queryTmpl, ch.database)
