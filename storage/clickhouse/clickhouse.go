@@ -127,6 +127,7 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	for {
 		timeSeries := make(map[string]map[uint64][]*prompb.Label)
 		newSeriesCount := 0
+		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
 
 		err := func() error {
 			query := fmt.Sprintf(queryTmpl, ch.database)
@@ -161,9 +162,14 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 		if err == nil {
 			ch.timeSeriesRW.Lock()
 			for metricName, fingerprintsMap := range timeSeries {
-				ch.timeSeries[metricName] = fingerprintsMap
+				for fingerprint, labels := range fingerprintsMap {
+					if _, ok := ch.timeSeries[metricName]; !ok {
+						ch.timeSeries[metricName] = make(map[uint64][]*prompb.Label)
+					}
+					ch.timeSeries[metricName][fingerprint] = labels
+				}
 			}
-			ch.lastLoadedTimeStamp = time.Now().UnixMilli()
+			ch.lastLoadedTimeStamp = lastLoadedTimeStamp
 			ch.timeSeriesRW.Unlock()
 			ch.l.Debugf("Loaded %d new time series", newSeriesCount)
 		} else {
