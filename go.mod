@@ -60,11 +60,12 @@ require (
 	github.com/prometheus/tsdb v0.0.0-20181003080831-0ce41118ed20
 	github.com/samuel/go-zookeeper v0.0.0-20161028232340-1d7be4effb13
 	github.com/sasha-s/go-deadlock v0.3.1 // indirect
+	github.com/shirou/gopsutil/v3 v3.22.8 // indirect
 	github.com/shurcooL/httpfs v0.0.0-20171119174359-809beceb2371
 	github.com/shurcooL/vfsgen v0.0.0-20180711163814-62bca832be04
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/pflag v1.0.0 // indirect
-	github.com/stretchr/testify v1.7.0
+	github.com/stretchr/testify v1.8.0
 	golang.org/x/net v0.0.0-20201021035429-f5854403a974
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
 	golang.org/x/time v0.0.0-20170424234030-8be79e1e0910

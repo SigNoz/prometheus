@@ -29,6 +29,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2" // register SQL driver
 
 	"github.com/pkg/errors"
+	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/sirupsen/logrus"
 
 	"github.com/prometheus/common/model"
@@ -122,60 +123,85 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	v, err := mem.VirtualMemory()
 
-	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2 WHERE timestamp_ms >= $1;`
+	if err != nil {
+		ch.l.Errorf("could not get memory info: %s", err)
+		return
+	}
+
+	// in batches with maximum 1/5 of memory, assuming 350 avg bytes per time series
+	batchSize := v.Available / 5 / 350
+
+	// LIMIT n, m allows to select the m rows from the result after skipping the first n rows.
+	// The LIMIT m OFFSET n syntax is equivalent.
+	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2 WHERE timestamp_ms >= $1 LIMIT $2, $3;`
+
 	for {
-		timeSeries := make(map[string]map[uint64][]*prompb.Label)
-		newSeriesCount := 0
+		var totalSeries uint64
+		var offset uint64
+		countQuery := fmt.Sprintf(`SELECT COUNT(DISTINCT(fingerprint)) FROM %s.time_series_v2 WHERE timestamp_ms >= $1`, ch.database)
+		err = ch.db.QueryRow(countQuery, ch.lastLoadedTimeStamp).Scan(&totalSeries)
+		if err != nil {
+			ch.l.Errorf("could not get the total series count: %s", err)
+			return
+		}
+
 		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
 
-		err := func() error {
-			query := fmt.Sprintf(queryTmpl, ch.database)
-			ch.l.Debug("Running reloader query:", query)
-			rows, err := ch.db.Query(query, ch.lastLoadedTimeStamp)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
+		for ; offset <= totalSeries; offset += batchSize + 1 {
+			timeSeries := make(map[string]map[uint64][]*prompb.Label)
+			newSeriesCount := 0
 
-			var f uint64
-			var b []byte
-			for rows.Next() {
-				if err = rows.Scan(&f, &b); err != nil {
-					return err
-				}
-				labels, metricName, err := unmarshalLabels(b)
+			err := func() error {
+				query := fmt.Sprintf(queryTmpl, ch.database)
+				ch.l.Debug("Running reloader query:", query, ch.lastLoadedTimeStamp, offset, batchSize)
+				rows, err := ch.db.Query(query, ch.lastLoadedTimeStamp, offset, batchSize)
 				if err != nil {
 					return err
 				}
-				if _, ok := timeSeries[metricName]; !ok {
-					timeSeries[metricName] = make(map[uint64][]*prompb.Label)
-				}
-				if _, ok := timeSeries[metricName][f]; !ok {
-					timeSeries[metricName][f] = make([]*prompb.Label, 0)
-				}
-				timeSeries[metricName][f] = labels
-				newSeriesCount += 1
-			}
-			return rows.Err()
-		}()
-		if err == nil {
-			ch.timeSeriesRW.Lock()
-			for metricName, fingerprintsMap := range timeSeries {
-				for fingerprint, labels := range fingerprintsMap {
-					if _, ok := ch.timeSeries[metricName]; !ok {
-						ch.timeSeries[metricName] = make(map[uint64][]*prompb.Label)
-					}
-					ch.timeSeries[metricName][fingerprint] = labels
-				}
-			}
-			ch.lastLoadedTimeStamp = lastLoadedTimeStamp
-			ch.timeSeriesRW.Unlock()
-			ch.l.Debugf("Loaded %d new time series", newSeriesCount)
-		} else {
-			ch.l.Error(err)
-		}
+				defer rows.Close()
 
+				var f uint64
+				var b []byte
+				for rows.Next() {
+					if err = rows.Scan(&f, &b); err != nil {
+						return err
+					}
+					labels, metricName, err := unmarshalLabels(b)
+					if err != nil {
+						return err
+					}
+					if _, ok := timeSeries[metricName]; !ok {
+						timeSeries[metricName] = make(map[uint64][]*prompb.Label)
+					}
+					if _, ok := timeSeries[metricName][f]; !ok {
+						timeSeries[metricName][f] = make([]*prompb.Label, 0)
+					}
+					timeSeries[metricName][f] = labels
+					newSeriesCount += 1
+				}
+				return rows.Err()
+			}()
+			if err == nil {
+				ch.timeSeriesRW.Lock()
+				for metricName, fingerprintsMap := range timeSeries {
+					for fingerprint, labels := range fingerprintsMap {
+						if _, ok := ch.timeSeries[metricName]; !ok {
+							ch.timeSeries[metricName] = make(map[uint64][]*prompb.Label)
+						}
+						ch.timeSeries[metricName][fingerprint] = labels
+					}
+				}
+				ch.timeSeriesRW.Unlock()
+				ch.l.Infof("Loaded %d new time series", newSeriesCount)
+			} else {
+				ch.l.Error(err)
+			}
+		}
+		ch.timeSeriesRW.Lock()
+		ch.lastLoadedTimeStamp = lastLoadedTimeStamp
+		ch.timeSeriesRW.Unlock()
 		select {
 		case <-ctx.Done():
 			ch.l.Warn(ctx.Err())
