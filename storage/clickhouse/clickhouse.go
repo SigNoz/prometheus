@@ -123,7 +123,7 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.time_series_v2 WHERE timestamp_ms >= $1;`
+	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.distributed_time_series_v2 WHERE timestamp_ms >= $1;`
 	for {
 		timeSeries := make(map[string]map[uint64][]*prompb.Label)
 		newSeriesCount := 0
@@ -242,7 +242,7 @@ func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, finger
 	fingerprintsKeys = fingerprintsKeys[:len(fingerprintsKeys)-1] // cut last ", "
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, timestamp_ms, value
-			FROM %s.samples_v2
+			FROM %s.distributed_samples_v2
 			WHERE metric_name = '%s' AND fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
 		ch.database, metricName, fingerprintsKeys, start, end,
 	)
@@ -322,7 +322,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	}
 	whereClause := strings.Join(conditions, " AND ")
 
-	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT fingerprint FROM %s.time_series_v2 WHERE %s`, ch.database, whereClause)
+	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT fingerprint FROM %s.distributed_time_series_v2 WHERE %s`, ch.database, whereClause)
 	return clickHouseQuery, args, nil
 }
 
