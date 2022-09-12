@@ -130,8 +130,8 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 		return
 	}
 
-	// in batches with maximum 1/5 of memory, assuming 350 avg bytes per time series
-	batchSize := v.Available / 5 / 350
+	// in batches with maximum 1/5 of memory, assuming 1.5kb avg per time series
+	batchSize := v.Available / 5 / 1536
 
 	// LIMIT n, m allows to select the m rows from the result after skipping the first n rows.
 	// The LIMIT m OFFSET n syntax is equivalent.
