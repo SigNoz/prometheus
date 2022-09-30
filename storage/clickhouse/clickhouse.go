@@ -193,6 +193,10 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 	var timestampMs int64
 	var value float64
 	var metricName string
+
+	totalFingerprintCount := len(fingerprints)
+	usedFingerprintCount := 0
+
 	for rows.Next() {
 		if err := rows.Scan(&metricName, &fingerprint, &timestampMs, &value); err != nil {
 			return nil, errors.WithStack(err)
@@ -210,6 +214,7 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 			ts = &prompb.TimeSeries{
 				Labels: labels,
 			}
+			usedFingerprintCount += 1
 		}
 
 		// add samples to current time series
@@ -224,6 +229,8 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 		res = append(res, ts)
 	}
 
+	ch.l.Infof("Used %d time series from %d time series returned by query", usedFingerprintCount, totalFingerprintCount)
+
 	if err := rows.Err(); err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -232,23 +239,23 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 
 func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, fingerprints map[uint64][]*prompb.Label, metricName string) ([]*prompb.TimeSeries, error) {
 
-	var fingerprintsKeys string
+	var fingerprintsNums []uint64
 	for f := range fingerprints {
-		fingerprintsKeys += fmt.Sprintf("'%v',", f)
+		fingerprintsNums = append(fingerprintsNums, f)
 	}
-	fingerprintsKeys = fingerprintsKeys[:len(fingerprintsKeys)-1] // cut last ", "
+
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, timestamp_ms, value
 			FROM %s.samples_v2
-			WHERE metric_name = '%s' AND fingerprint IN (%s) AND timestamp_ms >= %d AND timestamp_ms <= %d ORDER BY fingerprint, timestamp_ms;`,
-		ch.database, metricName, fingerprintsKeys, start, end,
+			WHERE metric_name = $1 AND fingerprint IN ($2) AND timestamp_ms >= $3 AND timestamp_ms <= $4 ORDER BY fingerprint, timestamp_ms;`,
+		ch.database,
 	)
 	query = strings.TrimSpace(query)
 
 	ch.l.Debugf("Running query : %s", query)
 
 	// run query
-	rows, err := ch.db.QueryContext(ctx, query)
+	rows, err := ch.db.QueryContext(ctx, query, metricName, fingerprintsNums, start, end)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -388,10 +395,12 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	if err != nil {
 		return nil, err
 	}
+	start := time.Now()
 	fingerprints, err = ch.fingerprintsForQuery(ctx, clickHouseQuery, args)
 	if err != nil {
 		return nil, err
 	}
+	ch.l.Debugf("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
 
 	res := new(prompb.QueryResult)
 	if len(fingerprints) == 0 {
