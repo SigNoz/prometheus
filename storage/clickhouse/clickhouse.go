@@ -248,8 +248,7 @@ func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, finger
 		SELECT metric_name, fingerprint, timestamp_ms, value
 			FROM %s.distributed_samples_v2
 			WHERE metric_name = $1 AND fingerprint IN ($2) AND timestamp_ms >= $3 AND timestamp_ms <= $4 ORDER BY fingerprint, timestamp_ms;`,
-		ch.database
-	)
+		ch.database)
 	query = strings.TrimSpace(query)
 
 	ch.l.Debugf("Running query : %s", query)
