@@ -37,7 +37,9 @@ import (
 )
 
 const (
-	subsystem = "clickhouse"
+	subsystem                     = "clickhouse"
+	DISTRIBUTED_TIME_SERIES_TABLE = "distributed_time_series_v2"
+	DISTRIBUTED_SAMPLES_TABLE     = "distributed_samples_v2"
 )
 
 // clickHouse implements storage interface for the ClickHouse.
@@ -123,14 +125,14 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.distributed_time_series_v2 WHERE timestamp_ms >= $1;`
+	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE timestamp_ms >= $1;`
 	for {
 		timeSeries := make(map[string]map[uint64][]*prompb.Label)
 		newSeriesCount := 0
 		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
 
 		err := func() error {
-			query := fmt.Sprintf(queryTmpl, ch.database)
+			query := fmt.Sprintf(queryTmpl, ch.database, DISTRIBUTED_TIME_SERIES_TABLE)
 			ch.l.Debug("Running reloader query:", query)
 			rows, err := ch.db.Query(query, ch.lastLoadedTimeStamp)
 			if err != nil {
@@ -246,9 +248,9 @@ func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, finger
 
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, timestamp_ms, value
-			FROM %s.distributed_samples_v2
+			FROM %s.%s
 			WHERE metric_name = $1 AND fingerprint IN ($2) AND timestamp_ms >= $3 AND timestamp_ms <= $4 ORDER BY fingerprint, timestamp_ms;`,
-		ch.database)
+		ch.database, DISTRIBUTED_SAMPLES_TABLE)
 	query = strings.TrimSpace(query)
 
 	ch.l.Debugf("Running query : %s", query)
@@ -325,7 +327,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	}
 	whereClause := strings.Join(conditions, " AND ")
 
-	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.distributed_time_series_v2 WHERE %s`, ch.database, whereClause)
+	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE %s`, ch.database, DISTRIBUTED_TIME_SERIES_TABLE, whereClause)
 
 	return clickHouseQuery, args, nil
 }
