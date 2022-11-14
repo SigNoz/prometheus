@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -239,24 +240,32 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 	return res, nil
 }
 
-func (ch *clickHouse) querySamples(ctx context.Context, start, end int64, fingerprints map[uint64][]*prompb.Label, metricName string) ([]*prompb.TimeSeries, error) {
+func (ch *clickHouse) querySamples(
+	ctx context.Context,
+	start int64,
+	end int64,
+	fingerprints map[uint64][]*prompb.Label,
+	metricName string,
+	subQuery string,
+	args []interface{},
+) ([]*prompb.TimeSeries, error) {
 
-	var fingerprintsNums []uint64
-	for f := range fingerprints {
-		fingerprintsNums = append(fingerprintsNums, f)
-	}
+	argCount := len(args)
 
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, timestamp_ms, value
 			FROM %s.%s
-			WHERE metric_name = $1 AND fingerprint IN ($2) AND timestamp_ms >= $3 AND timestamp_ms <= $4 ORDER BY fingerprint, timestamp_ms;`,
-		ch.database, DISTRIBUTED_SAMPLES_TABLE)
+			WHERE metric_name = $1 AND fingerprint IN (%s) AND timestamp_ms >= $%s AND timestamp_ms <= $%s ORDER BY fingerprint, timestamp_ms;`,
+		ch.database, DISTRIBUTED_SAMPLES_TABLE, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
 	query = strings.TrimSpace(query)
 
 	ch.l.Debugf("Running query : %s", query)
 
+	allArgs := append([]interface{}{metricName}, args...)
+	allArgs = append(allArgs, start, end)
+
 	// run query
-	rows, err := ch.db.QueryContext(ctx, query, metricName, fingerprintsNums, start, end)
+	rows, err := ch.db.QueryContext(ctx, query, allArgs...)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -302,11 +311,16 @@ func (ch *clickHouse) convertReadRequest(request *prompb.Query) base.Query {
 	return q
 }
 
-func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName string) (string, []interface{}, error) {
+func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName string, subQuery bool) (string, []interface{}, error) {
 	var clickHouseQuery string
 	var conditions []string
+	var argCount int = 0
+	var selectString string = "fingerprint, labels"
+	if subQuery {
+		argCount = 1
+		selectString = "fingerprint"
+	}
 	var args []interface{}
-	var argCount int
 	conditions = append(conditions, fmt.Sprintf("metric_name = $%d", argCount+1))
 	args = append(args, metricName)
 	for _, m := range query.Matchers {
@@ -327,7 +341,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	}
 	whereClause := strings.Join(conditions, " AND ")
 
-	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE %s`, ch.database, DISTRIBUTED_TIME_SERIES_TABLE, whereClause)
+	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT %s FROM %s.%s WHERE %s`, selectString, ch.database, DISTRIBUTED_TIME_SERIES_TABLE, whereClause)
 
 	return clickHouseQuery, args, nil
 }
@@ -393,7 +407,7 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	var fingerprints map[uint64][]*prompb.Label
 	var err error
 
-	clickHouseQuery, args, err := ch.prepareClickHouseQuery(query, metricName)
+	clickHouseQuery, args, err := ch.prepareClickHouseQuery(query, metricName, false)
 	if err != nil {
 		return nil, err
 	}
@@ -403,6 +417,7 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 		return nil, err
 	}
 	ch.l.Debugf("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
+	subQuery, args, err := ch.prepareClickHouseQuery(query, metricName, true)
 
 	res := new(prompb.QueryResult)
 	if len(fingerprints) == 0 {
@@ -414,7 +429,7 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	// 	sampleFunc = ch.tempTableSamples
 	// }
 
-	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName)
+	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName, subQuery, args)
 
 	if err != nil {
 		return nil, err
