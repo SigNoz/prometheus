@@ -40,6 +40,7 @@ import (
 const (
 	subsystem                     = "clickhouse"
 	DISTRIBUTED_TIME_SERIES_TABLE = "distributed_time_series_v2"
+	TIME_SERIES_TABLE             = "time_series_v2"
 	DISTRIBUTED_SAMPLES_TABLE     = "distributed_samples_v2"
 )
 
@@ -255,7 +256,7 @@ func (ch *clickHouse) querySamples(
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, timestamp_ms, value
 			FROM %s.%s
-			WHERE metric_name = $1 AND fingerprint GLOBAL IN (%s) AND timestamp_ms >= $%s AND timestamp_ms <= $%s ORDER BY fingerprint, timestamp_ms;`,
+			WHERE metric_name = $1 AND fingerprint IN (%s) AND timestamp_ms >= $%s AND timestamp_ms <= $%s ORDER BY fingerprint, timestamp_ms;`,
 		ch.database, DISTRIBUTED_SAMPLES_TABLE, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
 	query = strings.TrimSpace(query)
 
@@ -341,7 +342,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	}
 	whereClause := strings.Join(conditions, " AND ")
 
-	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT %s FROM %s.%s WHERE %s`, selectString, ch.database, DISTRIBUTED_TIME_SERIES_TABLE, whereClause)
+	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT %s FROM %s.%s WHERE %s`, selectString, ch.database, TIME_SERIES_TABLE, whereClause)
 
 	return clickHouseQuery, args, nil
 }
