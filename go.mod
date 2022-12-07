@@ -6,6 +6,7 @@ require (
 	github.com/Azure/azure-sdk-for-go v5.0.0-beta.0.20161028183111-bd73d950fa44+incompatible
 	github.com/Azure/go-autorest v10.8.1+incompatible
 	github.com/ClickHouse/clickhouse-go/v2 v2.0.12
+	github.com/DmitriyVTitov/size v1.5.0 // indirect
 	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
 	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
 	github.com/aws/aws-sdk-go v1.13.44-0.20180507225419-00862f899353

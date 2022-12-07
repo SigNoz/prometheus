@@ -29,6 +29,8 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2" // register SQL driver
 
+	"github.com/DmitriyVTitov/size"
+
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
@@ -200,7 +202,10 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 	totalFingerprintCount := len(fingerprints)
 	usedFingerprintCount := 0
 
+	start := time.Now()
+	totalSamples := 0
 	for rows.Next() {
+		totalSamples += 1
 		if err := rows.Scan(&metricName, &fingerprint, &timestampMs, &value); err != nil {
 			return nil, errors.WithStack(err)
 		}
@@ -226,6 +231,8 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 			Value:     value,
 		})
 	}
+	ch.l.Infof("Scanned %d time series in %s", len(res), time.Since(start))
+	ch.l.Infof("Scanned %d samples in %s", totalSamples, time.Since(start))
 
 	// add last time series
 	if ts != nil {
@@ -237,6 +244,7 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 	if err := rows.Err(); err != nil {
 		return nil, errors.WithStack(err)
 	}
+	ch.l.Infof("Size of result: %d", size.Of(res))
 	return res, nil
 }
 
@@ -259,11 +267,10 @@ func (ch *clickHouse) querySamples(
 		ch.database, SAMPLES_TABLE, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
 	query = strings.TrimSpace(query)
 
-	ch.l.Debugf("Running query : %s", query)
-
 	allArgs := append([]interface{}{metricName}, args...)
 	allArgs = append(allArgs, start, end)
 
+	ch.l.Infof("Running query: %s with args %v", query, allArgs)
 	// run query
 	rows, err := ch.db.QueryContext(ctx, query, allArgs...)
 	if err != nil {
@@ -348,6 +355,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 
 func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string, args []interface{}) (map[uint64][]*prompb.Label, error) {
 	// run query
+	ch.l.Infof("Running query : %s", query)
 	rows, err := ch.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -358,18 +366,25 @@ func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string, ar
 	var fingerprint uint64
 	var b []byte
 	fingerprints := make(map[uint64][]*prompb.Label)
+	rowsReadStart := time.Now()
 	for rows.Next() {
 		if err = rows.Scan(&fingerprint, &b); err != nil {
 			return nil, err
 		}
 
+		start := time.Now()
 		labels, _, err := unmarshalLabels(b)
+		ch.l.Infof("unmarshalLabels took %s", time.Since(start))
+		ch.l.Infof("size of labels is %d", size.Of(labels))
 
 		if err != nil {
 			return nil, err
 		}
 		fingerprints[fingerprint] = labels
+		ch.l.Infof("fingerprint %d has labels count %d", fingerprint, len(labels))
 	}
+	ch.l.Infof("Read %d rows in %s", len(fingerprints), time.Since(rowsReadStart))
+	ch.l.Infof("size for total fingerprintsForQuery is %d", size.Of(fingerprints))
 
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -416,7 +431,7 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	if err != nil {
 		return nil, err
 	}
-	ch.l.Debugf("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
+	ch.l.Infof("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
 	subQuery, args, err := ch.prepareClickHouseQuery(query, metricName, true)
 
 	res := new(prompb.QueryResult)
