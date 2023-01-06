@@ -41,6 +41,7 @@ const (
 	subsystem                     = "clickhouse"
 	DISTRIBUTED_TIME_SERIES_TABLE = "distributed_time_series_v2"
 	DISTRIBUTED_SAMPLES_TABLE     = "distributed_samples_v2"
+	DEFAULT_CACHE_SIZE            = 1000000
 )
 
 // clickHouse implements storage interface for the ClickHouse.
@@ -55,6 +56,7 @@ type clickHouse struct {
 	timeSeries          map[string]map[uint64][]*prompb.Label
 	lastLoadedTimeStamp int64
 	useClickHouseQuery  bool
+	cache               *Cache
 }
 
 type ClickHouseParams struct {
@@ -102,6 +104,20 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 	if strings.ToLower(strings.TrimSpace(os.Getenv("USE_CLICKHOUSE_QUERY"))) == "true" {
 		useClickHouseQuery = true
 	}
+	var cacheSize int
+	if cacheSizeStr := strings.TrimSpace(os.Getenv("CACHE_SIZE")); cacheSizeStr != "" {
+		cacheSize, err = strconv.Atoi(cacheSizeStr)
+		if err != nil {
+			l.Warnf("Could not parse CACHE_SIZE, using default value (%d)", DEFAULT_CACHE_SIZE)
+		}
+	}
+	if cacheSize == 0 {
+		cacheSize = DEFAULT_CACHE_SIZE
+	}
+	newCache, err := NewCache(cacheSize)
+	if err != nil {
+		return nil, err
+	}
 
 	ch := &clickHouse{
 		db:                   initDB,
@@ -111,84 +127,18 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 
 		timeSeries:         make(map[string]map[uint64][]*prompb.Label, 262144),
 		useClickHouseQuery: useClickHouseQuery,
+		cache:              newCache,
 	}
 
 	go func() {
 		ctx := pprof.WithLabels(context.TODO(), pprof.Labels("component", "clickhouse_reloader"))
 		pprof.SetGoroutineLabels(ctx)
-		// ch.runTimeSeriesReloader(ctx)
 	}()
 
 	return ch, nil
 }
 
-func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE timestamp_ms >= $1;`
-	for {
-		timeSeries := make(map[string]map[uint64][]*prompb.Label)
-		newSeriesCount := 0
-		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
-
-		err := func() error {
-			query := fmt.Sprintf(queryTmpl, ch.database, DISTRIBUTED_TIME_SERIES_TABLE)
-			ch.l.Debug("Running reloader query:", query)
-			rows, err := ch.db.Query(query, ch.lastLoadedTimeStamp)
-			if err != nil {
-				return err
-			}
-			defer rows.Close()
-
-			var f uint64
-			var b []byte
-			for rows.Next() {
-				if err = rows.Scan(&f, &b); err != nil {
-					return err
-				}
-				labels, metricName, err := unmarshalLabels(b)
-				if err != nil {
-					return err
-				}
-				if _, ok := timeSeries[metricName]; !ok {
-					timeSeries[metricName] = make(map[uint64][]*prompb.Label)
-				}
-				if _, ok := timeSeries[metricName][f]; !ok {
-					timeSeries[metricName][f] = make([]*prompb.Label, 0)
-				}
-				timeSeries[metricName][f] = labels
-				newSeriesCount += 1
-			}
-			return rows.Err()
-		}()
-		if err == nil {
-			ch.timeSeriesRW.Lock()
-			for metricName, fingerprintsMap := range timeSeries {
-				for fingerprint, labels := range fingerprintsMap {
-					if _, ok := ch.timeSeries[metricName]; !ok {
-						ch.timeSeries[metricName] = make(map[uint64][]*prompb.Label)
-					}
-					ch.timeSeries[metricName][fingerprint] = labels
-				}
-			}
-			ch.lastLoadedTimeStamp = lastLoadedTimeStamp
-			ch.timeSeriesRW.Unlock()
-			ch.l.Debugf("Loaded %d new time series", newSeriesCount)
-		} else {
-			ch.l.Error(err)
-		}
-
-		select {
-		case <-ctx.Done():
-			ch.l.Warn(ctx.Err())
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*prompb.Label) ([]*prompb.TimeSeries, error) {
+func (ch *clickHouse) scanSamples(rows *sql.Rows) ([]*prompb.TimeSeries, error) {
 	// scan results
 	var res []*prompb.TimeSeries
 	var ts *prompb.TimeSeries
@@ -197,7 +147,6 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 	var value float64
 	var metricName string
 
-	totalFingerprintCount := len(fingerprints)
 	usedFingerprintCount := 0
 
 	for rows.Next() {
@@ -213,9 +162,12 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 				res = append(res, ts)
 			}
 
-			labels := fingerprints[fingerprint]
+			labels, ok := ch.cache.Get(fingerprint)
+			if !ok {
+				return nil, fmt.Errorf("could not find labels for fingerprint %d", fingerprint)
+			}
 			ts = &prompb.TimeSeries{
-				Labels: labels,
+				Labels: (labels).([]*prompb.Label),
 			}
 			usedFingerprintCount += 1
 		}
@@ -232,8 +184,6 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]*pro
 		res = append(res, ts)
 	}
 
-	ch.l.Infof("Used %d time series from %d time series returned by query", usedFingerprintCount, totalFingerprintCount)
-
 	if err := rows.Err(); err != nil {
 		return nil, errors.WithStack(err)
 	}
@@ -244,7 +194,6 @@ func (ch *clickHouse) querySamples(
 	ctx context.Context,
 	start int64,
 	end int64,
-	fingerprints map[uint64][]*prompb.Label,
 	metricName string,
 	subQuery string,
 	args []interface{},
@@ -270,7 +219,7 @@ func (ch *clickHouse) querySamples(
 		return nil, errors.WithStack(err)
 	}
 	defer rows.Close()
-	return ch.scanSamples(rows, fingerprints)
+	return ch.scanSamples(rows)
 }
 
 // convertReadRequest converts protobuf read request into a slice of storage queries.
@@ -346,35 +295,88 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	return clickHouseQuery, args, nil
 }
 
-func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string, args []interface{}) (map[uint64][]*prompb.Label, error) {
+func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery string, args []interface{}) {
 	// run query
-	rows, err := ch.db.QueryContext(ctx, query, args...)
+	rows, err := ch.db.QueryContext(ctx, subQuery, args...)
 	if err != nil {
-		return nil, err
+		return
+	}
+	defer rows.Close()
+
+	// scan results
+	var fingerprint uint64
+	var miss []uint64
+	for rows.Next() {
+		if err = rows.Scan(&fingerprint); err != nil {
+			return
+		}
+		if _, ok := ch.cache.Get(fingerprint); !ok {
+			miss = append(miss, fingerprint)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return
+	}
+
+	// fill missing fingerprints in batches of 10k fingerprints with maximum of 10 go routines
+	waitCh := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+	for i := 0; i < len(miss); i += 10000 {
+		end := i + 10000
+		if end > len(miss) {
+			end = len(miss)
+		}
+		waitCh <- struct{}{}
+		wg.Add(1)
+		go func(f []uint64) {
+			defer wg.Done()
+			defer func() { <-waitCh }()
+			ch.fillMissingFingerprintsBatch(ctx, f)
+		}(miss[i:end])
+	}
+	wg.Wait()
+}
+
+func (ch *clickHouse) fillMissingFingerprintsBatch(ctx context.Context, fingerprints []uint64) error {
+	// build query
+	var query strings.Builder
+	query.WriteString(fmt.Sprintf(`SELECT fingerprint, labels FROM %s.%s WHERE fingerprint IN (`, ch.database, DISTRIBUTED_TIME_SERIES_TABLE))
+	for i, fingerprint := range fingerprints {
+		if i > 0 {
+			query.WriteString(",")
+		}
+		query.WriteString(fmt.Sprintf("%d", fingerprint))
+	}
+	query.WriteString(")")
+
+	// run query
+	rows, err := ch.db.QueryContext(ctx, query.String())
+	if err != nil {
+		return err
 	}
 	defer rows.Close()
 
 	// scan results
 	var fingerprint uint64
 	var b []byte
-	fingerprints := make(map[uint64][]*prompb.Label)
 	for rows.Next() {
 		if err = rows.Scan(&fingerprint, &b); err != nil {
-			return nil, err
+			return err
 		}
 
 		labels, _, err := unmarshalLabels(b)
 
 		if err != nil {
-			return nil, err
+			return err
 		}
-		fingerprints[fingerprint] = labels
+		ch.cache.ContainsOrAdd(fingerprint, labels)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	return fingerprints, nil
+	return nil
 }
 
 func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
@@ -404,32 +406,21 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 		}
 	}
 
-	var fingerprints map[uint64][]*prompb.Label
 	var err error
 
-	clickHouseQuery, args, err := ch.prepareClickHouseQuery(query, metricName, false)
+	subQuery, args, err := ch.prepareClickHouseQuery(query, metricName, true)
 	if err != nil {
 		return nil, err
 	}
 	start := time.Now()
-	fingerprints, err = ch.fingerprintsForQuery(ctx, clickHouseQuery, args)
-	if err != nil {
-		return nil, err
-	}
-	ch.l.Debugf("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
-	subQuery, args, err := ch.prepareClickHouseQuery(query, metricName, true)
+
+	ch.fillMissingFingerprints(ctx, subQuery, args)
+
+	ch.l.Infof("fillMissingFingerprints took %s", time.Since(start))
 
 	res := new(prompb.QueryResult)
-	if len(fingerprints) == 0 {
-		return res, nil
-	}
 
-	sampleFunc := ch.querySamples
-	// if len(fingerprints) > ch.maxTimeSeriesInQuery {
-	// 	sampleFunc = ch.tempTableSamples
-	// }
-
-	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName, subQuery, args)
+	ts, err := ch.querySamples(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), metricName, subQuery, args)
 
 	if err != nil {
 		return nil, err

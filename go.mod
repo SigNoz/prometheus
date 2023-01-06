@@ -33,7 +33,7 @@ require (
 	github.com/hashicorp/consul v1.1.1-0.20180615161029-bed22a81e9fd
 	github.com/hashicorp/go-cleanhttp v0.0.0-20160407174126-ad28ea4487f0 // indirect
 	github.com/hashicorp/go-rootcerts v0.0.0-20160503143440-6bb64b370b90 // indirect
-	github.com/hashicorp/golang-lru v0.0.0-20180201235237-0fb14efe8c47 // indirect
+	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/hashicorp/serf v0.8.1-0.20161007004122-1d4fa605f6ff // indirect
 	github.com/influxdata/influxdb v1.2.3-0.20170331210902-15e594fc09f1
 	github.com/jmespath/go-jmespath v0.0.0-20160803190731-bd40a432e4c7 // indirect
