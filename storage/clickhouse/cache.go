@@ -49,6 +49,11 @@ func (c *Cache) Get(key interface{}) (interface{}, bool) {
 	}
 	c.rw.RLock()
 	val, ok := c.evictedItems[key]
+	// if the item is in the evicted items, we need to add it back to the LRU cache
+	if ok {
+		delete(c.evictedItems, key)
+		c.Cache.Add(key, val)
+	}
 	c.rw.RUnlock()
 	return val, ok
 }

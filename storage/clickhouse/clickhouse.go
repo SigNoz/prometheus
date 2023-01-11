@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2" // register SQL driver
+	"github.com/grafana/dskit/multierror"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -295,11 +296,11 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	return clickHouseQuery, args, nil
 }
 
-func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery string, args []interface{}) {
+func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery string, args []interface{}) error {
 	// run query
 	rows, err := ch.db.QueryContext(ctx, subQuery, args...)
 	if err != nil {
-		return
+		return err
 	}
 	defer rows.Close()
 
@@ -308,7 +309,7 @@ func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery stri
 	var miss []uint64
 	for rows.Next() {
 		if err = rows.Scan(&fingerprint); err != nil {
-			return
+			return err
 		}
 		if _, ok := ch.cache.Get(fingerprint); !ok {
 			miss = append(miss, fingerprint)
@@ -316,12 +317,13 @@ func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery stri
 	}
 
 	if err := rows.Err(); err != nil {
-		return
+		return err
 	}
 
 	// fill missing fingerprints in batches of 10k fingerprints with maximum of 10 go routines
 	waitCh := make(chan struct{}, 10)
 	var wg sync.WaitGroup
+	var errs []error
 	for i := 0; i < len(miss); i += 10000 {
 		end := i + 10000
 		if end > len(miss) {
@@ -332,10 +334,14 @@ func (ch *clickHouse) fillMissingFingerprints(ctx context.Context, subQuery stri
 		go func(f []uint64) {
 			defer wg.Done()
 			defer func() { <-waitCh }()
-			ch.fillMissingFingerprintsBatch(ctx, f)
+			err := ch.fillMissingFingerprintsBatch(ctx, f)
+			if err != nil {
+				errs = append(errs, err)
+			}
 		}(miss[i:end])
 	}
 	wg.Wait()
+	return multierror.New(errs)
 }
 
 func (ch *clickHouse) fillMissingFingerprintsBatch(ctx context.Context, fingerprints []uint64) error {
@@ -414,9 +420,12 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	}
 	start := time.Now()
 
-	ch.fillMissingFingerprints(ctx, subQuery, args)
+	err = ch.fillMissingFingerprints(ctx, subQuery, args)
 
 	ch.l.Infof("fillMissingFingerprints took %s", time.Since(start))
+	if err != nil {
+		return nil, err
+	}
 
 	res := new(prompb.QueryResult)
 
