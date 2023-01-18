@@ -20,11 +20,10 @@ package column
 import (
 	"errors"
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"math"
 	"reflect"
 	"time"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
 const indexTypeMask = 0b11111111
@@ -35,6 +34,7 @@ const (
 	keyUInt32 = 2
 	keyUInt64 = 3
 )
+
 const (
 	/// Need to read dictionary if it wasn't.
 	needGlobalDictionaryBit = 1 << 8
@@ -66,12 +66,28 @@ type LowCardinality struct {
 		keys  []int
 		index map[interface{}]int
 	}
+	name string
 }
 
-func (col *LowCardinality) parse(t Type) (_ *LowCardinality, err error) {
+func (col *LowCardinality) Reset() {
+	col.rows = 0
+	col.index.Reset()
+	col.keys8.Reset()
+	col.keys16.Reset()
+	col.keys32.Reset()
+	col.keys64.Reset()
+	col.append.index = make(map[interface{}]int)
+	col.append.keys = col.append.keys[:0]
+}
+
+func (col *LowCardinality) Name() string {
+	return col.name
+}
+
+func (col *LowCardinality) parse(t Type, tz *time.Location) (_ *LowCardinality, err error) {
 	col.chType = t
 	col.append.index = make(map[interface{}]int)
-	if col.index, err = Type(t.params()).Column(); err != nil {
+	if col.index, err = Type(t.params()).Column(col.name, tz); err != nil {
 		return nil, err
 	}
 	if nullable, ok := col.index.(*Nullable); ok {
@@ -132,7 +148,8 @@ func (col *LowCardinality) AppendRow(v interface{}) error {
 			col.index.AppendRow(nil)
 		}
 	}
-	if v == nil {
+	// second check is unfortunate - but we could be passed a *type(nil) e.g. via LowCardinality(Nullable(String))
+	if v == nil || (reflect.ValueOf(v).Kind() == reflect.Ptr && reflect.ValueOf(v).IsNil()) {
 		col.append.keys = append(col.append.keys, 0)
 		return nil
 	}
@@ -150,11 +167,11 @@ func (col *LowCardinality) AppendRow(v interface{}) error {
 	return nil
 }
 
-func (col *LowCardinality) Decode(decoder *binary.Decoder, rows int) error {
+func (col *LowCardinality) Decode(reader *proto.Reader, rows int) error {
 	if rows == 0 {
 		return nil
 	}
-	indexSerializationType, err := decoder.UInt64()
+	indexSerializationType, err := reader.UInt64()
 	if err != nil {
 		return err
 	}
@@ -179,76 +196,61 @@ func (col *LowCardinality) Decode(decoder *binary.Decoder, rows int) error {
 			Err:        errors.New("additional keys bit is missing"),
 		}
 	}
-	indexRows, err := decoder.Int64()
+	indexRows, err := reader.Int64()
 	if err != nil {
 		return err
 	}
-	if err := col.index.Decode(decoder, int(indexRows)); err != nil {
+	if err := col.index.Decode(reader, int(indexRows)); err != nil {
 		return err
 	}
-	keysRows, err := decoder.Int64()
+	keysRows, err := reader.Int64()
 	if err != nil {
 		return err
 	}
 	col.rows = int(keysRows)
-	return col.keys().Decode(decoder, col.rows)
+	return col.keys().Decode(reader, col.rows)
 }
 
-func (col *LowCardinality) Encode(encoder *binary.Encoder) error {
+func (col *LowCardinality) Encode(buffer *proto.Buffer) {
 	if col.rows == 0 {
-		return nil
+		return
 	}
 	defer func() {
 		col.append.keys, col.append.index = nil, nil
 	}()
+	ixLen := uint64(len(col.append.index))
 	switch {
-	case len(col.append.index) < math.MaxUint8:
+	case ixLen < math.MaxUint8:
 		col.key = keyUInt8
 		for _, v := range col.append.keys {
-			if err := col.keys8.AppendRow(uint8(v)); err != nil {
-				return err
-			}
+			col.keys8.AppendRow(uint8(v))
 		}
-	case len(col.append.index) < math.MaxUint16:
+	case ixLen < math.MaxUint16:
 		col.key = keyUInt16
 		for _, v := range col.append.keys {
-			if err := col.keys16.AppendRow(uint16(v)); err != nil {
-				return err
-			}
+			col.keys16.AppendRow(uint16(v))
 		}
-	case len(col.append.index) < math.MaxUint32:
+	case ixLen < math.MaxUint32:
 		col.key = keyUInt32
 		for _, v := range col.append.keys {
-			if err := col.keys32.AppendRow(uint32(v)); err != nil {
-				return err
-			}
+			col.keys32.AppendRow(uint32(v))
 		}
 	default:
 		col.key = keyUInt64
 		for _, v := range col.append.keys {
-			if err := col.keys64.AppendRow(uint64(v)); err != nil {
-				return err
-			}
+			col.keys64.AppendRow(uint64(v))
 		}
 	}
-	if err := encoder.UInt64(updateAll | uint64(col.key)); err != nil {
-		return err
-	}
-	if err := encoder.Int64(int64(col.index.Rows())); err != nil {
-		return err
-	}
-	if err := col.index.Encode(encoder); err != nil {
-		return err
-	}
+	buffer.PutUInt64(updateAll | uint64(col.key))
+	buffer.PutInt64(int64(col.index.Rows()))
+	col.index.Encode(buffer)
 	keys := col.keys()
-	if err := encoder.Int64(int64(keys.Rows())); err != nil {
-		return err
-	}
-	return keys.Encode(encoder)
+	buffer.PutInt64(int64(keys.Rows()))
+	keys.Encode(buffer)
 }
 
-func (col *LowCardinality) ReadStatePrefix(decoder *binary.Decoder) error {
-	keyVersion, err := decoder.UInt64()
+func (col *LowCardinality) ReadStatePrefix(reader *proto.Reader) error {
+	keyVersion, err := reader.UInt64()
 	if err != nil {
 		return err
 	}
@@ -261,8 +263,9 @@ func (col *LowCardinality) ReadStatePrefix(decoder *binary.Decoder) error {
 	return nil
 }
 
-func (col *LowCardinality) WriteStatePrefix(encoder *binary.Encoder) error {
-	return encoder.UInt64(sharedDictionariesWithAdditionalKeys)
+func (col *LowCardinality) WriteStatePrefix(buffer *proto.Buffer) error {
+	buffer.PutUInt64(sharedDictionariesWithAdditionalKeys)
+	return nil
 }
 
 func (col *LowCardinality) keys() Interface {

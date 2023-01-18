@@ -19,15 +19,23 @@ package column
 
 import (
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
 
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 	"github.com/paulmach/orb"
 )
 
 type Point struct {
-	lon Float64
-	lat Float64
+	name string
+	col  proto.ColPoint
+}
+
+func (col *Point) Reset() {
+	col.col.Reset()
+}
+
+func (col *Point) Name() string {
+	return col.name
 }
 
 func (col *Point) Type() Type {
@@ -39,7 +47,7 @@ func (col *Point) ScanType() reflect.Type {
 }
 
 func (col *Point) Rows() int {
-	return col.lon.Rows()
+	return col.col.Rows()
 }
 
 func (col *Point) Row(i int, ptr bool) interface{} {
@@ -73,8 +81,18 @@ func (col *Point) Append(v interface{}) (nulls []uint8, err error) {
 	case []orb.Point:
 		nulls = make([]uint8, len(v))
 		for _, v := range v {
-			col.lon = append(col.lon, v.Lon())
-			col.lat = append(col.lat, v.Lat())
+			col.col.Append(proto.Point{
+				X: v.Lon(),
+				Y: v.Lat(),
+			})
+		}
+	case []*orb.Point:
+		nulls = make([]uint8, len(v))
+		for _, v := range v {
+			col.col.Append(proto.Point{
+				X: v.Lon(),
+				Y: v.Lat(),
+			})
 		}
 	default:
 		return nil, &ColumnConverterError{
@@ -88,8 +106,15 @@ func (col *Point) Append(v interface{}) (nulls []uint8, err error) {
 func (col *Point) AppendRow(v interface{}) error {
 	switch v := v.(type) {
 	case orb.Point:
-		col.lon = append(col.lon, v.Lon())
-		col.lat = append(col.lat, v.Lat())
+		col.col.Append(proto.Point{
+			X: v.Lon(),
+			Y: v.Lat(),
+		})
+	case *orb.Point:
+		col.col.Append(proto.Point{
+			X: v.Lon(),
+			Y: v.Lat(),
+		})
 	default:
 		return &ColumnConverterError{
 			Op:   "AppendRow",
@@ -100,27 +125,19 @@ func (col *Point) AppendRow(v interface{}) error {
 	return nil
 }
 
-func (col *Point) Decode(decoder *binary.Decoder, rows int) error {
-	if err := col.lon.Decode(decoder, rows); err != nil {
-		return err
-	}
-	if err := col.lat.Decode(decoder, rows); err != nil {
-		return err
-	}
-	return nil
+func (col *Point) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
 }
 
-func (col *Point) Encode(encoder *binary.Encoder) error {
-	if err := col.lon.Encode(encoder); err != nil {
-		return err
-	}
-	return col.lat.Encode(encoder)
+func (col *Point) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
 }
 
 func (col *Point) row(i int) orb.Point {
+	p := col.col.Row(i)
 	return orb.Point{
-		col.lon[i],
-		col.lat[i],
+		p.X,
+		p.Y,
 	}
 }
 

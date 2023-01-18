@@ -17,19 +17,21 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/prometheus/common/model"
-
 	config_util "github.com/prometheus/common/config"
-	"github.com/prometheus/prometheus/pkg/labels"
+	"github.com/prometheus/common/model"
+	"github.com/stretchr/testify/require"
+
+	"github.com/prometheus/prometheus/config"
+	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
 )
 
 const (
@@ -40,13 +42,12 @@ func TestTargetLabels(t *testing.T) {
 	target := newTestTarget("example.com:80", 0, labels.FromStrings("job", "some_job", "foo", "bar"))
 	want := labels.FromStrings(model.JobLabel, "some_job", "foo", "bar")
 	got := target.Labels()
-	if !reflect.DeepEqual(want, got) {
-		t.Errorf("want base labels %v, got %v", want, got)
-	}
+	require.Equal(t, want, got)
 }
 
 func TestTargetOffset(t *testing.T) {
 	interval := 10 * time.Second
+	jitter := uint64(0)
 
 	offsets := make([]time.Duration, 10000)
 
@@ -55,7 +56,7 @@ func TestTargetOffset(t *testing.T) {
 		target := newTestTarget("example.com:80", 0, labels.FromStrings(
 			"label", fmt.Sprintf("%d", i),
 		))
-		offsets[i] = target.offset(interval)
+		offsets[i] = target.offset(interval, jitter)
 	}
 
 	// Put the offsets into buckets and validate that they are all
@@ -74,7 +75,7 @@ func TestTargetOffset(t *testing.T) {
 
 	t.Log(buckets)
 
-	// Calculate whether the the number of targets per bucket
+	// Calculate whether the number of targets per bucket
 	// does not differ more than a given tolerance.
 	avg := len(offsets) / len(buckets)
 	tolerance := 0.15
@@ -112,16 +113,14 @@ func TestTargetURL(t *testing.T) {
 		"cde": []string{"huu"},
 		"xyz": []string{"hoo"},
 	}
-	expectedURL := url.URL{
+	expectedURL := &url.URL{
 		Scheme:   "https",
 		Host:     "example.com:1234",
 		Path:     "/metricz",
 		RawQuery: expectedParams.Encode(),
 	}
 
-	if u := target.URL(); !reflect.DeepEqual(u.String(), expectedURL.String()) {
-		t.Fatalf("Expected URL %q, but got %q", expectedURL.String(), u.String())
-	}
+	require.Equal(t, expectedURL, target.URL())
 }
 
 func newTestTarget(targetURL string, deadline time.Duration, lbls labels.Labels) *Target {
@@ -130,7 +129,7 @@ func newTestTarget(targetURL string, deadline time.Duration, lbls labels.Labels)
 	lb.Set(model.AddressLabel, strings.TrimPrefix(targetURL, "http://"))
 	lb.Set(model.MetricsPathLabel, "/metrics")
 
-	return &Target{labels: lb.Labels()}
+	return &Target{labels: lb.Labels(labels.EmptyLabels())}
 }
 
 func TestNewHTTPBearerToken(t *testing.T) {
@@ -256,7 +255,6 @@ func TestNewHTTPClientCert(t *testing.T) {
 	tlsConfig := newTLSConfig("server", t)
 	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	tlsConfig.ClientCAs = tlsConfig.RootCAs
-	tlsConfig.BuildNameToCertificate()
 	server.TLS = tlsConfig
 	server.StartTLS()
 	defer server.Close()
@@ -339,7 +337,7 @@ func TestNewHTTPWithBadServerName(t *testing.T) {
 func newTLSConfig(certName string, t *testing.T) *tls.Config {
 	tlsConfig := &tls.Config{}
 	caCertPool := x509.NewCertPool()
-	caCert, err := ioutil.ReadFile(caCertPath)
+	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
 		t.Fatalf("Couldn't set up TLS server: %v", err)
 	}
@@ -353,7 +351,6 @@ func newTLSConfig(certName string, t *testing.T) *tls.Config {
 		t.Errorf("Unable to use specified server cert (%s) & key (%v): %s", certPath, keyPath, err)
 	}
 	tlsConfig.Certificates = []tls.Certificate{cert}
-	tlsConfig.BuildNameToCertificate()
 	return tlsConfig
 }
 
@@ -368,5 +365,24 @@ func TestNewClientWithBadTLSConfig(t *testing.T) {
 	_, err := config_util.NewClientFromConfig(cfg, "test")
 	if err == nil {
 		t.Fatalf("Expected error, got nil.")
+	}
+}
+
+func TestTargetsFromGroup(t *testing.T) {
+	expectedError := "instance 0 in group : no address"
+
+	cfg := config.ScrapeConfig{
+		ScrapeTimeout:  model.Duration(10 * time.Second),
+		ScrapeInterval: model.Duration(1 * time.Minute),
+	}
+	targets, failures := TargetsFromGroup(&targetgroup.Group{Targets: []model.LabelSet{{}, {model.AddressLabel: "localhost:9090"}}}, &cfg, false)
+	if len(targets) != 1 {
+		t.Fatalf("Expected 1 target, got %v", len(targets))
+	}
+	if len(failures) != 1 {
+		t.Fatalf("Expected 1 failure, got %v", len(failures))
+	}
+	if failures[0].Error() != expectedError {
+		t.Fatalf("Expected error %s, got %s", expectedError, failures[0])
 	}
 }

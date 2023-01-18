@@ -14,45 +14,143 @@
 package scrape
 
 import (
+	"fmt"
+	"hash/fnv"
 	"reflect"
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
+	config_util "github.com/prometheus/common/config"
+	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/osutil"
 )
 
-// Appendable returns an Appender.
-type Appendable interface {
-	Appender() (storage.Appender, error)
+var targetMetadataCache = newMetadataMetricsCollector()
+
+// MetadataMetricsCollector is a Custom Collector for the metadata cache metrics.
+type MetadataMetricsCollector struct {
+	CacheEntries *prometheus.Desc
+	CacheBytes   *prometheus.Desc
+
+	scrapeManager *Manager
+}
+
+func newMetadataMetricsCollector() *MetadataMetricsCollector {
+	return &MetadataMetricsCollector{
+		CacheEntries: prometheus.NewDesc(
+			"prometheus_target_metadata_cache_entries",
+			"Total number of metric metadata entries in the cache",
+			[]string{"scrape_job"},
+			nil,
+		),
+		CacheBytes: prometheus.NewDesc(
+			"prometheus_target_metadata_cache_bytes",
+			"The number of bytes that are currently used for storing metric metadata in the cache",
+			[]string{"scrape_job"},
+			nil,
+		),
+	}
+}
+
+func (mc *MetadataMetricsCollector) registerManager(m *Manager) {
+	mc.scrapeManager = m
+}
+
+// Describe sends the metrics descriptions to the channel.
+func (mc *MetadataMetricsCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- mc.CacheEntries
+	ch <- mc.CacheBytes
+}
+
+// Collect creates and sends the metrics for the metadata cache.
+func (mc *MetadataMetricsCollector) Collect(ch chan<- prometheus.Metric) {
+	if mc.scrapeManager == nil {
+		return
+	}
+
+	for tset, targets := range mc.scrapeManager.TargetsActive() {
+		var size, length int
+		for _, t := range targets {
+			size += t.MetadataSize()
+			length += t.MetadataLength()
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			mc.CacheEntries,
+			prometheus.GaugeValue,
+			float64(length),
+			tset,
+		)
+
+		ch <- prometheus.MustNewConstMetric(
+			mc.CacheBytes,
+			prometheus.GaugeValue,
+			float64(size),
+			tset,
+		)
+	}
 }
 
 // NewManager is the Manager constructor
-func NewManager(logger log.Logger, app Appendable) *Manager {
+func NewManager(o *Options, logger log.Logger, app storage.Appendable) *Manager {
+	if o == nil {
+		o = &Options{}
+	}
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-	return &Manager{
+	m := &Manager{
 		append:        app,
+		opts:          o,
 		logger:        logger,
 		scrapeConfigs: make(map[string]*config.ScrapeConfig),
 		scrapePools:   make(map[string]*scrapePool),
 		graceShut:     make(chan struct{}),
 		triggerReload: make(chan struct{}, 1),
 	}
+	targetMetadataCache.registerManager(m)
+
+	return m
+}
+
+// Options are the configuration parameters to the scrape manager.
+type Options struct {
+	ExtraMetrics  bool
+	NoDefaultPort bool
+	// Option used by downstream scraper users like OpenTelemetry Collector
+	// to help lookup metric metadata. Should be false for Prometheus.
+	PassMetadataInContext bool
+	// Option to enable the experimental in-memory metadata storage and append
+	// metadata to the WAL.
+	EnableMetadataStorage bool
+	// Option to enable protobuf negotiation with the client. Note that the client can already
+	// send protobuf without needing to enable this.
+	EnableProtobufNegotiation bool
+	// Option to increase the interval used by scrape manager to throttle target groups updates.
+	DiscoveryReloadInterval model.Duration
+
+	// Optional HTTP client options to use when scraping.
+	HTTPClientOptions []config_util.HTTPClientOption
 }
 
 // Manager maintains a set of scrape pools and manages start/stop cycles
-// when receiving new target groups form the discovery manager.
+// when receiving new target groups from the discovery manager.
 type Manager struct {
+	opts      *Options
 	logger    log.Logger
-	append    Appendable
+	append    storage.Appendable
 	graceShut chan struct{}
 
+	jitterSeed    uint64     // Global jitterSeed seed is used to spread scrape workload across HA setup.
 	mtxScrape     sync.Mutex // Guards the fields below.
 	scrapeConfigs map[string]*config.ScrapeConfig
 	scrapePools   map[string]*scrapePool
@@ -82,7 +180,13 @@ func (m *Manager) Run(tsets <-chan map[string][]*targetgroup.Group) error {
 }
 
 func (m *Manager) reloader() {
-	ticker := time.NewTicker(5 * time.Second)
+	reloadIntervalDuration := m.opts.DiscoveryReloadInterval
+	if reloadIntervalDuration < model.Duration(5*time.Second) {
+		reloadIntervalDuration = model.Duration(5 * time.Second)
+	}
+
+	ticker := time.NewTicker(time.Duration(reloadIntervalDuration))
+
 	defer ticker.Stop()
 
 	for {
@@ -104,18 +208,18 @@ func (m *Manager) reload() {
 	m.mtxScrape.Lock()
 	var wg sync.WaitGroup
 	for setName, groups := range m.targetSets {
-		var sp *scrapePool
-		existing, ok := m.scrapePools[setName]
-		if !ok {
+		if _, ok := m.scrapePools[setName]; !ok {
 			scrapeConfig, ok := m.scrapeConfigs[setName]
 			if !ok {
 				level.Error(m.logger).Log("msg", "error reloading target set", "err", "invalid config id:"+setName)
-				return
+				continue
 			}
-			sp = newScrapePool(scrapeConfig, m.append, log.With(m.logger, "scrape_pool", setName))
+			sp, err := newScrapePool(scrapeConfig, m.append, m.jitterSeed, log.With(m.logger, "scrape_pool", setName), m.opts)
+			if err != nil {
+				level.Error(m.logger).Log("msg", "error creating new scrape pool", "err", err, "scrape_pool", setName)
+				continue
+			}
 			m.scrapePools[setName] = sp
-		} else {
-			sp = existing
 		}
 
 		wg.Add(1)
@@ -123,11 +227,25 @@ func (m *Manager) reload() {
 		go func(sp *scrapePool, groups []*targetgroup.Group) {
 			sp.Sync(groups)
 			wg.Done()
-		}(sp, groups)
+		}(m.scrapePools[setName], groups)
 
 	}
 	m.mtxScrape.Unlock()
 	wg.Wait()
+}
+
+// setJitterSeed calculates a global jitterSeed per server relying on extra label set.
+func (m *Manager) setJitterSeed(labels labels.Labels) error {
+	h := fnv.New64a()
+	hostname, err := osutil.GetFQDN()
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(h, "%s%s", hostname, labels.String()); err != nil {
+		return err
+	}
+	m.jitterSeed = h.Sum64()
+	return nil
 }
 
 // Stop cancels all running scrape pools and blocks until all have exited.
@@ -158,16 +276,28 @@ func (m *Manager) ApplyConfig(cfg *config.Config) error {
 	}
 	m.scrapeConfigs = c
 
-	// Cleanup and reload pool if config has changed.
+	if err := m.setJitterSeed(cfg.GlobalConfig.ExternalLabels); err != nil {
+		return err
+	}
+
+	// Cleanup and reload pool if the configuration has changed.
+	var failed bool
 	for name, sp := range m.scrapePools {
 		if cfg, ok := m.scrapeConfigs[name]; !ok {
 			sp.stop()
 			delete(m.scrapePools, name)
 		} else if !reflect.DeepEqual(sp.config, cfg) {
-			sp.reload(cfg)
+			err := sp.reload(cfg)
+			if err != nil {
+				level.Error(m.logger).Log("msg", "error reloading scrape pool", "err", err, "scrape_pool", name)
+				failed = true
+			}
 		}
 	}
 
+	if failed {
+		return errors.New("failed to apply the new configuration")
+	}
 	return nil
 }
 
@@ -179,9 +309,20 @@ func (m *Manager) TargetsAll() map[string][]*Target {
 	targets := make(map[string][]*Target, len(m.scrapePools))
 	for tset, sp := range m.scrapePools {
 		targets[tset] = append(sp.ActiveTargets(), sp.DroppedTargets()...)
-
 	}
 	return targets
+}
+
+// ScrapePools returns the list of all scrape pool names.
+func (m *Manager) ScrapePools() []string {
+	m.mtxScrape.Lock()
+	defer m.mtxScrape.Unlock()
+
+	names := make([]string, 0, len(m.scrapePools))
+	for name := range m.scrapePools {
+		names = append(names, name)
+	}
+	return names
 }
 
 // TargetsActive returns the active targets currently being scraped.
@@ -189,10 +330,24 @@ func (m *Manager) TargetsActive() map[string][]*Target {
 	m.mtxScrape.Lock()
 	defer m.mtxScrape.Unlock()
 
+	var (
+		wg  sync.WaitGroup
+		mtx sync.Mutex
+	)
+
 	targets := make(map[string][]*Target, len(m.scrapePools))
+	wg.Add(len(m.scrapePools))
 	for tset, sp := range m.scrapePools {
-		targets[tset] = sp.ActiveTargets()
+		// Running in parallel limits the blocking time of scrapePool to scrape
+		// interval when there's an update from SD.
+		go func(tset string, sp *scrapePool) {
+			mtx.Lock()
+			targets[tset] = sp.ActiveTargets()
+			mtx.Unlock()
+			wg.Done()
+		}(tset, sp)
 	}
+	wg.Wait()
 	return targets
 }
 

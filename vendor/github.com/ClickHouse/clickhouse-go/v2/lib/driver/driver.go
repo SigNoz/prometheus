@@ -20,6 +20,7 @@ package driver
 import (
 	"context"
 	"reflect"
+	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
 )
@@ -31,6 +32,13 @@ type (
 		Name  string
 		Value interface{}
 	}
+
+	NamedDateValue struct {
+		Name  string
+		Value time.Time
+		Scale uint8
+	}
+
 	Stats struct {
 		MaxOpenConns int
 		MaxIdleConns int
@@ -73,7 +81,9 @@ type (
 		Append(v ...interface{}) error
 		AppendStruct(v interface{}) error
 		Column(int) BatchColumn
+		Flush() error
 		Send() error
+		IsSent() bool
 	}
 	BatchColumn interface {
 		Append(interface{}) error

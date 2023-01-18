@@ -26,9 +26,10 @@ import (
 
 func (c *connect) query(ctx context.Context, release func(*connect, error), query string, args ...interface{}) (*rows, error) {
 	var (
-		options   = queryOptions(ctx)
-		onProcess = options.onProcess()
-		body, err = bind(c.server.Timezone, query, args...)
+		options                    = queryOptions(ctx)
+		onProcess                  = options.onProcess()
+		queryParamsProtocolSupport = c.revision >= proto.DBMS_MIN_PROTOCOL_VERSION_WITH_PARAMETERS
+		body, err                  = bindQueryOrAppendParameters(queryParamsProtocolSupport, &options, query, c.server.Timezone, args...)
 	)
 
 	if err != nil {
@@ -36,6 +37,10 @@ func (c *connect) query(ctx context.Context, release func(*connect, error), quer
 		return nil, err
 	}
 
+	// set a read deadline - alternative to context.Read operation will fail if no data is received after deadline.
+	c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
+	defer c.conn.SetReadDeadline(time.Time{})
+	// context level deadlines override any read deadline
 	if deadline, ok := ctx.Deadline(); ok {
 		c.conn.SetDeadline(deadline)
 		defer c.conn.SetDeadline(time.Time{})
@@ -52,10 +57,14 @@ func (c *connect) query(ctx context.Context, release func(*connect, error), quer
 		release(c, err)
 		return nil, err
 	}
-
+	bufferSize := c.blockBufferSize
+	if options.blockBufferSize > 0 {
+		// allow block buffer sze to be overridden per query
+		bufferSize = options.blockBufferSize
+	}
 	var (
 		errors = make(chan error)
-		stream = make(chan *proto.Block, 2)
+		stream = make(chan *proto.Block, bufferSize)
 	)
 
 	go func() {
@@ -66,8 +75,8 @@ func (c *connect) query(ctx context.Context, release func(*connect, error), quer
 		if err != nil {
 			errors <- err
 		}
-		close(errors)
 		close(stream)
+		close(errors)
 		release(c, err)
 	}()
 

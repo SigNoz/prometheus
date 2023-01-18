@@ -18,21 +18,33 @@
 package column
 
 import (
+	"database/sql"
+	"database/sql/driver"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
+	"time"
 )
 
 type Nullable struct {
 	base     Interface
-	nulls    UInt8
+	nulls    proto.ColUInt8
 	enable   bool
 	scanType reflect.Type
+	name     string
 }
 
-func (col *Nullable) parse(t Type) (_ *Nullable, err error) {
+func (col *Nullable) Reset() {
+	col.base.Reset()
+	col.nulls.Reset()
+}
+
+func (col *Nullable) Name() string {
+	return col.name
+}
+
+func (col *Nullable) parse(t Type, tz *time.Location) (_ *Nullable, err error) {
 	col.enable = true
-	if col.base, err = Type(t.params()).Column(); err != nil {
+	if col.base, err = Type(t.params()).Column(col.name, tz); err != nil {
 		return nil, err
 	}
 	switch base := col.base.ScanType(); {
@@ -62,12 +74,12 @@ func (col *Nullable) Rows() int {
 	if !col.enable {
 		return col.base.Rows()
 	}
-	return len(col.nulls)
+	return col.nulls.Rows()
 }
 
 func (col *Nullable) Row(i int, ptr bool) interface{} {
 	if col.enable {
-		if col.nulls[i] == 1 {
+		if col.nulls.Row(i) == 1 {
 			return nil
 		}
 	}
@@ -76,7 +88,11 @@ func (col *Nullable) Row(i int, ptr bool) interface{} {
 
 func (col *Nullable) ScanRow(dest interface{}, row int) error {
 	if col.enable {
-		if col.nulls[row] == 1 {
+		switch col.nulls.Row(row) {
+		case 1:
+			if scan, ok := dest.(sql.Scanner); ok {
+				return scan.Scan(nil)
+			}
 			return nil
 		}
 	}
@@ -88,41 +104,57 @@ func (col *Nullable) Append(v interface{}) ([]uint8, error) {
 	if err != nil {
 		return nil, err
 	}
-	col.nulls = append(col.nulls, nulls...)
+	for i := range nulls {
+		col.nulls.Append(nulls[i])
+	}
 	return nulls, nil
 }
 
 func (col *Nullable) AppendRow(v interface{}) error {
-	if v == nil || (reflect.ValueOf(v).Kind() == reflect.Ptr && reflect.ValueOf(v).IsNil()) {
-		col.nulls = append(col.nulls, 1)
+	// Might receive double pointers like **String, because of how Nullable columns are read
+	// Unpack because we can't write double pointers
+	rv := reflect.ValueOf(v)
+	if v != nil && rv.Kind() == reflect.Pointer && !rv.IsNil() && rv.Elem().Kind() == reflect.Pointer {
+		v = rv.Elem().Interface()
+		rv = reflect.ValueOf(v)
+	}
+
+	if v == nil || (rv.Kind() == reflect.Pointer && rv.IsNil()) {
+		col.nulls.Append(1)
+		// used to detect sql.Null* types
+	} else if val, ok := v.(driver.Valuer); ok {
+		val, err := val.Value()
+		if err != nil {
+			return err
+		}
+		if val == nil {
+			col.nulls.Append(1)
+		} else {
+			col.nulls.Append(0)
+		}
 	} else {
-		col.nulls = append(col.nulls, 0)
+		col.nulls.Append(0)
 	}
 	return col.base.AppendRow(v)
 }
 
-func (col *Nullable) Decode(decoder *binary.Decoder, rows int) (err error) {
+func (col *Nullable) Decode(reader *proto.Reader, rows int) error {
 	if col.enable {
-		if err := col.nulls.Decode(decoder, rows); err != nil {
+		if err := col.nulls.DecodeColumn(reader, rows); err != nil {
 			return err
 		}
 	}
-	if err := col.base.Decode(decoder, rows); err != nil {
+	if err := col.base.Decode(reader, rows); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (col *Nullable) Encode(encoder *binary.Encoder) error {
+func (col *Nullable) Encode(buffer *proto.Buffer) {
 	if col.enable {
-		if err := col.nulls.Encode(encoder); err != nil {
-			return err
-		}
+		col.nulls.EncodeColumn(buffer)
 	}
-	if err := col.base.Encode(encoder); err != nil {
-		return err
-	}
-	return nil
+	col.base.Encode(buffer)
 }
 
 var _ Interface = (*Nullable)(nil)

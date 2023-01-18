@@ -15,18 +15,19 @@ package influxdb
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"strings"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	influx "github.com/influxdata/influxdb/client/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/prompb"
 
-	influx "github.com/influxdata/influxdb/client/v2"
+	"github.com/prometheus/prometheus/prompb"
 )
 
 // Client allows sending batches of Prometheus samples to InfluxDB.
@@ -40,7 +41,7 @@ type Client struct {
 }
 
 // NewClient creates a new Client.
-func NewClient(logger log.Logger, conf influx.HTTPConfig, db string, rp string) *Client {
+func NewClient(logger log.Logger, conf influx.HTTPConfig, db, rp string) *Client {
 	c, err := influx.NewHTTPClient(conf)
 	// Currently influx.NewClient() *should* never return an error.
 	if err != nil {
@@ -83,7 +84,7 @@ func (c *Client) Write(samples model.Samples) error {
 	for _, s := range samples {
 		v := float64(s.Value)
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			level.Debug(c.logger).Log("msg", "cannot send  to InfluxDB, skipping sample", "value", v, "sample", s)
+			level.Debug(c.logger).Log("msg", "Cannot send  to InfluxDB, skipping sample", "value", v, "sample", s)
 			c.ignoredSamples.Inc()
 			continue
 		}
@@ -125,7 +126,7 @@ func (c *Client) Read(req *prompb.ReadRequest) (*prompb.ReadResponse, error) {
 			return nil, err
 		}
 		if resp.Err != "" {
-			return nil, fmt.Errorf(resp.Err)
+			return nil, errors.New(resp.Err)
 		}
 
 		if err = mergeResult(labelsToSeries, resp.Results); err != nil {
@@ -158,7 +159,7 @@ func (c *Client) buildCommand(q *prompb.Query) (string, error) {
 				from = fmt.Sprintf("FROM %q./^%s$/", c.retentionPolicy, escapeSlashes(m.Value))
 			default:
 				// TODO: Figure out how to support these efficiently.
-				return "", fmt.Errorf("non-equal or regex-non-equal matchers are not supported on the metric name yet")
+				return "", errors.New("non-equal or regex-non-equal matchers are not supported on the metric name yet")
 			}
 			continue
 		}
@@ -214,7 +215,7 @@ func mergeResult(labelsToSeries map[string]*prompb.TimeSeries, results []influx.
 }
 
 func concatLabels(labels map[string]string) string {
-	// 0xff cannot cannot occur in valid UTF-8 sequences, so use it
+	// 0xff cannot occur in valid UTF-8 sequences, so use it
 	// as a separator here.
 	separator := "\xff"
 	pairs := make([]string, 0, len(labels))
@@ -224,8 +225,8 @@ func concatLabels(labels map[string]string) string {
 	return strings.Join(pairs, separator)
 }
 
-func tagsToLabelPairs(name string, tags map[string]string) []*prompb.Label {
-	pairs := make([]*prompb.Label, 0, len(tags))
+func tagsToLabelPairs(name string, tags map[string]string) []prompb.Label {
+	pairs := make([]prompb.Label, 0, len(tags))
 	for k, v := range tags {
 		if v == "" {
 			// If we select metrics with different sets of labels names,
@@ -236,12 +237,12 @@ func tagsToLabelPairs(name string, tags map[string]string) []*prompb.Label {
 			// to make the result correct.
 			continue
 		}
-		pairs = append(pairs, &prompb.Label{
+		pairs = append(pairs, prompb.Label{
 			Name:  k,
 			Value: v,
 		})
 	}
-	pairs = append(pairs, &prompb.Label{
+	pairs = append(pairs, prompb.Label{
 		Name:  model.MetricNameLabel,
 		Value: name,
 	})
@@ -267,12 +268,12 @@ func valuesToSamples(values [][]interface{}) ([]prompb.Sample, error) {
 
 		timestamp, err := jsonTimestamp.Int64()
 		if err != nil {
-			return nil, fmt.Errorf("unable to convert sample timestamp to int64: %v", err)
+			return nil, fmt.Errorf("unable to convert sample timestamp to int64: %w", err)
 		}
 
 		value, err := jsonValue.Float64()
 		if err != nil {
-			return nil, fmt.Errorf("unable to convert sample value to float64: %v", err)
+			return nil, fmt.Errorf("unable to convert sample value to float64: %w", err)
 		}
 
 		samples = append(samples, prompb.Sample{

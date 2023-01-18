@@ -18,14 +18,23 @@
 package column
 
 import (
+	"database/sql"
 	"fmt"
+	"github.com/ClickHouse/ch-go/proto"
 	"reflect"
-
-	"github.com/ClickHouse/clickhouse-go/v2/lib/binary"
 )
 
 type Bool struct {
-	values UInt8
+	col  proto.ColBool
+	name string
+}
+
+func (col *Bool) Reset() {
+	col.col.Reset()
+}
+
+func (col *Bool) Name() string {
+	return col.name
 }
 
 func (col *Bool) Type() Type {
@@ -37,7 +46,7 @@ func (col *Bool) ScanType() reflect.Type {
 }
 
 func (col *Bool) Rows() int {
-	return len(col.values)
+	return col.col.Rows()
 }
 
 func (col *Bool) Row(i int, ptr bool) interface{} {
@@ -55,6 +64,8 @@ func (col *Bool) ScanRow(dest interface{}, row int) error {
 	case **bool:
 		*d = new(bool)
 		**d = col.row(row)
+	case *sql.NullBool:
+		return d.Scan(col.row(row))
 	default:
 		return &ColumnConverterError{
 			Op:   "ScanRow",
@@ -68,32 +79,36 @@ func (col *Bool) ScanRow(dest interface{}, row int) error {
 func (col *Bool) Append(v interface{}) (nulls []uint8, err error) {
 	switch v := v.(type) {
 	case []bool:
-		in := make([]uint8, 0, len(v))
 		for _, v := range v {
-			switch {
-			case v:
-				in = append(in, 1)
-			default:
-				in = append(in, 0)
-			}
+			col.col.Append(v)
 		}
-		col.values, nulls = append(col.values, in...), make([]uint8, len(v))
 	case []*bool:
 		nulls = make([]uint8, len(v))
-		in := make([]uint8, 0, len(v))
 		for i, v := range v {
-			var value uint8
+			var value bool
 			switch {
 			case v != nil:
 				if *v {
-					value = 1
+					value = true
 				}
 			default:
 				nulls[i] = 1
 			}
-			in = append(in, value)
+			col.col.Append(value)
 		}
-		col.values = append(col.values, in...)
+	case []sql.NullBool:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			col.Append(v[i])
+		}
+	case []*sql.NullBool:
+		nulls = make([]uint8, len(v))
+		for i := range v {
+			if v[i] == nil {
+				nulls[i] = 1
+			}
+			col.Append(v[i])
+		}
 	default:
 		return nil, &ColumnConverterError{
 			Op:   "Append",
@@ -113,6 +128,16 @@ func (col *Bool) AppendRow(v interface{}) error {
 		if v != nil {
 			value = *v
 		}
+	case sql.NullBool:
+		switch v.Valid {
+		case true:
+			value = v.Bool
+		}
+	case *sql.NullBool:
+		switch v.Valid {
+		case true:
+			value = v.Bool
+		}
 	case nil:
 	default:
 		return &ColumnConverterError{
@@ -121,25 +146,20 @@ func (col *Bool) AppendRow(v interface{}) error {
 			From: fmt.Sprintf("%T", v),
 		}
 	}
-	switch {
-	case value:
-		col.values = append(col.values, 1)
-	default:
-		col.values = append(col.values, 0)
-	}
+	col.col.Append(value)
 	return nil
 }
 
-func (col *Bool) Decode(decoder *binary.Decoder, rows int) error {
-	return col.values.Decode(decoder, rows)
+func (col *Bool) Decode(reader *proto.Reader, rows int) error {
+	return col.col.DecodeColumn(reader, rows)
 }
 
-func (col *Bool) Encode(encoder *binary.Encoder) error {
-	return col.values.Encode(encoder)
+func (col *Bool) Encode(buffer *proto.Buffer) {
+	col.col.EncodeColumn(buffer)
 }
 
 func (col *Bool) row(i int) bool {
-	return col.values[i] == 1
+	return col.col.Row(i)
 }
 
 var _ Interface = (*Bool)(nil)

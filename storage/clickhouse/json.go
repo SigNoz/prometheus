@@ -66,18 +66,18 @@ func marshalLabels(labels []*prompb.Label, b []byte) []byte {
 
 // unmarshalLabels unmarshals JSON into Prometheus labels.
 // It does not preserves an order.
-func unmarshalLabels(b []byte) ([]*prompb.Label, string, error) {
+func unmarshalLabels(b []byte) ([]prompb.Label, string, error) {
 	var metricName string
 	m := make(map[string]string)
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, metricName, err
 	}
-	res := make([]*prompb.Label, 0, len(m))
+	res := make([]prompb.Label, 0, len(m))
 	for n, v := range m {
 		if n == "__name__" {
 			metricName = v
 		}
-		res = append(res, &prompb.Label{
+		res = append(res, prompb.Label{
 			Name:  n,
 			Value: v,
 		})

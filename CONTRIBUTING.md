@@ -17,10 +17,9 @@ Prometheus uses GitHub to manage reviews of pull requests.
   Comments](https://code.google.com/p/go-wiki/wiki/CodeReviewComments)
   and the _Formatting and style_ section of Peter Bourgon's [Go: Best
   Practices for Production
-  Environments](http://peter.bourgon.org/go-in-production/#formatting-and-style).
+  Environments](https://peter.bourgon.org/go-in-production/#formatting-and-style).
 
-* Be sure to sign off on the [DCO](https://github.com/probot/dco#how-it-works)
-
+* Be sure to sign off on the [DCO](https://github.com/probot/dco#how-it-works).
 
 ## Steps to Contribute
 
@@ -28,10 +27,13 @@ Should you wish to work on an issue, please claim it first by commenting on the 
 
 Please check the [`low-hanging-fruit`](https://github.com/prometheus/prometheus/issues?q=is%3Aissue+is%3Aopen+label%3A%22low+hanging+fruit%22) label to find issues that are good for getting started. If you have questions about one of the issues, with or without the tag, please comment on them and one of the maintainers will clarify it. For a quicker response, contact us over [IRC](https://prometheus.io/community).
 
+You can [spin up a prebuilt dev environment](https://gitpod.io/#https://github.com/prometheus/prometheus) using Gitpod.io.
+
 For complete instructions on how to compile see: [Building From Source](https://github.com/prometheus/prometheus#building-from-source)
 
 For quickly compiling and testing your changes do:
-```
+
+```bash
 # For building.
 go build ./cmd/prometheus/
 ./prometheus
@@ -40,14 +42,39 @@ go build ./cmd/prometheus/
 make test         # Make sure all the tests pass before you commit and push :)
 ```
 
-All our issues are regularly tagged so that you can also filter down the issues involving the components you want to work on. For our labelling policy refer [the wiki page](https://github.com/prometheus/prometheus/wiki/Label-Names-and-Descriptions).
+We use [`golangci-lint`](https://github.com/golangci/golangci-lint) for linting the code. If it reports an issue and you think that the warning needs to be disregarded or is a false-positive, you can add a special comment `//nolint:linter1[,linter2,...]` before the offending line. Use this sparingly though, fixing the code to comply with the linter's recommendation is in general the preferred course of action.
+
+All our issues are regularly tagged so that you can also filter down the issues involving the components you want to work on. For our labeling policy refer [the wiki page](https://github.com/prometheus/prometheus/wiki/Label-Names-and-Descriptions).
 
 ## Pull Request Checklist
 
-* Branch from the master branch and, if needed, rebase to the current master branch before submitting your pull request. If it doesn't merge cleanly with master you may be asked to rebase your changes.
+* Branch from the main branch and, if needed, rebase to the current main branch before submitting your pull request. If it doesn't merge cleanly with main you may be asked to rebase your changes.
 
 * Commits should be as small as possible, while ensuring that each commit is correct independently (i.e., each commit should compile and pass tests).
 
-* If your patch is not getting reviewed or you need a specific person to review it, you can @-reply a reviewer asking for a review in the pull request or a comment, or you can ask for a review on IRC channel [#prometheus](https://webchat.freenode.net/?channels=#prometheus) on irc.freenode.net (for the easiest start, [join via Riot](https://riot.im/app/#/room/#prometheus:matrix.org)).
+* If your patch is not getting reviewed or you need a specific person to review it, you can @-reply a reviewer asking for a review in the pull request or a comment, or you can ask for a review on the IRC channel [#prometheus-dev](https://web.libera.chat/?channels=#prometheus-dev) on irc.libera.chat (for the easiest start, [join via Element](https://app.element.io/#/room/#prometheus-dev:matrix.org)).
 
 * Add tests relevant to the fixed bug or new feature.
+
+## Dependency management
+
+The Prometheus project uses [Go modules](https://golang.org/cmd/go/#hdr-Modules__module_versions__and_more) to manage dependencies on external packages.
+
+To add or update a new dependency, use the `go get` command:
+
+```bash
+# Pick the latest tagged release.
+go get example.com/some/module/pkg@latest
+
+# Pick a specific version.
+go get example.com/some/module/pkg@vX.Y.Z
+```
+
+Tidy up the `go.mod` and `go.sum` files:
+
+```bash
+# The GO111MODULE variable can be omitted when the code isn't located in GOPATH.
+GO111MODULE=on go mod tidy
+```
+
+You have to commit the changes to `go.mod` and `go.sum` before submitting the pull request.

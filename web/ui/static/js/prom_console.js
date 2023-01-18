@@ -3,7 +3,6 @@
  * as graphs.
  *
  */
-
 PromConsole = {};
 
 PromConsole.NumberFormatter = {};
@@ -21,6 +20,9 @@ PromConsole._stripTrailingZero = function(x) {
 
 // Humanize a number.
 PromConsole.NumberFormatter.humanize = function(x) {
+  if (x === null) {
+    return "null";
+  }
   var ret = PromConsole.NumberFormatter._humanize(
     x, PromConsole.NumberFormatter.prefixesBig,
     PromConsole.NumberFormatter.prefixesSmall, 1000);
@@ -34,6 +36,9 @@ PromConsole.NumberFormatter.humanize = function(x) {
 
 // Humanize a number, don't use milli/micro/etc. prefixes.
 PromConsole.NumberFormatter.humanizeNoSmallPrefix = function(x) {
+  if (x === null) {
+    return "null";
+  }
   if (Math.abs(x) < 1) {
     return PromConsole._stripTrailingZero(x.toPrecision(3));
   }
@@ -47,6 +52,9 @@ PromConsole.NumberFormatter.humanizeNoSmallPrefix = function(x) {
 
 // Humanize a number with 1024 as the base, rather than 1000.
 PromConsole.NumberFormatter.humanize1024 = function(x) {
+  if (x === null) {
+    return "null";
+  }
   var ret = PromConsole.NumberFormatter._humanize(
     x, PromConsole.NumberFormatter.prefixesBig1024,
     [], 1024);
@@ -60,6 +68,9 @@ PromConsole.NumberFormatter.humanize1024 = function(x) {
 
 // Humanize a number, returning an exact representation.
 PromConsole.NumberFormatter.humanizeExact = function(x) {
+  if (x === null) {
+    return "null";
+  }
   var ret = PromConsole.NumberFormatter._humanize(
     x, PromConsole.NumberFormatter.prefixesBig,
     PromConsole.NumberFormatter.prefixesSmall, 1000);
@@ -309,6 +320,8 @@ PromConsole.graphDefaults = {
   yTitle: "",     // The title of the y axis.
   // Number formatter for y axis.
   yAxisFormatter: PromConsole.NumberFormatter.humanize,
+  // Number of ticks (horizontal lines) for the y axis
+  yAxisTicks: null,
   // Number formatter for y values hover detail.
   yHoverFormatter: PromConsole.NumberFormatter.humanizeExact,
   // Color scheme to be used by the plots. Can be either a list of hex color
@@ -462,7 +475,7 @@ PromConsole.Graph.prototype._render = function(data) {
 			var newSeries = [];
 			var pos = 0;
 			var start = self.params.endTime - self.params.duration;
-      var step = self.params.duration / this.graphTd.offsetWidth;
+      var step = Math.floor(self.params.duration / this.graphTd.offsetWidth * 1000) / 1000;
 			for (var t = start; t <= self.params.endTime; t += step) {
 				// Allow for floating point inaccuracy.
 				if (series[seriesLen].data.length > pos && series[seriesLen].data[pos].x < t + step / 100) {
@@ -518,7 +531,8 @@ PromConsole.Graph.prototype._render = function(data) {
   });
   var yAxis = new Rickshaw.Graph.Axis.Y({
       graph: graph,
-      tickFormat: this.params.yAxisFormatter
+      tickFormat: this.params.yAxisFormatter,
+      ticks: this.params.yAxisTicks
   });
   var xAxis = new Rickshaw.Graph.Axis.Time({
       graph: graph,
@@ -550,7 +564,7 @@ PromConsole.Graph.prototype.buildQueryUrl = function(expr) {
   var p = this.params;
   return PATH_PREFIX + "/api/v1/query_range?query=" +
     encodeURIComponent(expr) +
-    "&step=" + p.duration / this.graphTd.offsetWidth +
+    "&step=" + Math.floor(p.duration / this.graphTd.offsetWidth * 1000) / 1000 +
     "&start=" + (p.endTime - p.duration) + "&end=" + p.endTime;
 };
 
@@ -601,7 +615,7 @@ PromConsole.Graph.prototype.dispatch = function() {
   }
 
   var loadingImg = document.createElement("img");
-  loadingImg.src = PATH_PREFIX + '/static/img/ajax-loader.gif';
+  loadingImg.src = PATH_PREFIX + '/classic/static/img/ajax-loader.gif';
   loadingImg.alt = 'Loading...';
   loadingImg.className = 'prom_graph_loading';
   this.graphTd.appendChild(loadingImg);
@@ -625,7 +639,7 @@ PromConsole._interpolateName = function(name, metric) {
 PromConsole._chooseNameFunction = function(data) {
   // By default, use the full metric name.
   var nameFunc = function (metric) {
-    name = metric.__name__ + "{";
+    var name = metric.__name__ + "{";
     for (var label in metric) {
       if (label.substring(0,2) == "__") {
         continue;
@@ -634,7 +648,7 @@ PromConsole._chooseNameFunction = function(data) {
     }
     return name + "}";
   };
-  
+
   // If only one label varies, use that value.
   var labelValues = {};
   for (var e = 0; e < data.length; e++) {
@@ -647,7 +661,7 @@ PromConsole._chooseNameFunction = function(data) {
       }
     }
   }
-  
+
   var multiValueLabels = [];
   for (var label in labelValues) {
     if (Object.keys(labelValues[label]).length > 1) {

@@ -14,21 +14,26 @@
 package kubernetes
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/discovery/targetgroup"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/prometheus/prometheus/discovery/targetgroup"
 )
 
-func makeNode(name, address string, labels map[string]string, annotations map[string]string) *v1.Node {
+func makeNode(name, address, providerID string, labels, annotations map[string]string) *v1.Node {
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Labels:      labels,
 			Annotations: annotations,
+		},
+		Spec: v1.NodeSpec{
+			ProviderID: providerID,
 		},
 		Status: v1.NodeStatus{
 			Addresses: []v1.NodeAddress{
@@ -47,11 +52,11 @@ func makeNode(name, address string, labels map[string]string, annotations map[st
 }
 
 func makeEnumeratedNode(i int) *v1.Node {
-	return makeNode(fmt.Sprintf("test%d", i), "1.2.3.4", map[string]string{}, map[string]string{})
+	return makeNode(fmt.Sprintf("test%d", i), "1.2.3.4", fmt.Sprintf("aws:///de-west-3a/i-%d", i), map[string]string{}, map[string]string{})
 }
 
 func TestNodeDiscoveryBeforeStart(t *testing.T) {
-	n, c, w := makeDiscovery(RoleNode, NamespaceDiscovery{})
+	n, c := makeDiscovery(RoleNode, NamespaceDiscovery{})
 
 	k8sDiscoveryTest{
 		discovery: n,
@@ -59,11 +64,11 @@ func TestNodeDiscoveryBeforeStart(t *testing.T) {
 			obj := makeNode(
 				"test",
 				"1.2.3.4",
-				map[string]string{"testlabel": "testvalue"},
-				map[string]string{"testannotation": "testannotationvalue"},
+				"aws:///nl-north-7b/i-03149834983492827",
+				map[string]string{"test-label": "testvalue"},
+				map[string]string{"test-annotation": "testannotationvalue"},
 			)
-			c.CoreV1().Nodes().Create(obj)
-			w.Nodes().Add(obj)
+			c.CoreV1().Nodes().Create(context.Background(), obj, metav1.CreateOptions{})
 		},
 		expectedMaxItems: 1,
 		expectedRes: map[string]*targetgroup.Group{
@@ -76,9 +81,12 @@ func TestNodeDiscoveryBeforeStart(t *testing.T) {
 					},
 				},
 				Labels: model.LabelSet{
-					"__meta_kubernetes_node_name":                      "test",
-					"__meta_kubernetes_node_label_testlabel":           "testvalue",
-					"__meta_kubernetes_node_annotation_testannotation": "testannotationvalue",
+					"__meta_kubernetes_node_name":                              "test",
+					"__meta_kubernetes_node_provider_id":                       "aws:///nl-north-7b/i-03149834983492827",
+					"__meta_kubernetes_node_label_test_label":                  "testvalue",
+					"__meta_kubernetes_node_labelpresent_test_label":           "true",
+					"__meta_kubernetes_node_annotation_test_annotation":        "testannotationvalue",
+					"__meta_kubernetes_node_annotationpresent_test_annotation": "true",
 				},
 				Source: "node/test",
 			},
@@ -87,14 +95,13 @@ func TestNodeDiscoveryBeforeStart(t *testing.T) {
 }
 
 func TestNodeDiscoveryAdd(t *testing.T) {
-	n, c, w := makeDiscovery(RoleNode, NamespaceDiscovery{})
+	n, c := makeDiscovery(RoleNode, NamespaceDiscovery{})
 
 	k8sDiscoveryTest{
 		discovery: n,
 		afterStart: func() {
 			obj := makeEnumeratedNode(1)
-			c.CoreV1().Nodes().Create(obj)
-			w.Nodes().Add(obj)
+			c.CoreV1().Nodes().Create(context.Background(), obj, metav1.CreateOptions{})
 		},
 		expectedMaxItems: 1,
 		expectedRes: map[string]*targetgroup.Group{
@@ -107,7 +114,8 @@ func TestNodeDiscoveryAdd(t *testing.T) {
 					},
 				},
 				Labels: model.LabelSet{
-					"__meta_kubernetes_node_name": "test1",
+					"__meta_kubernetes_node_name":        "test1",
+					"__meta_kubernetes_node_provider_id": "aws:///de-west-3a/i-1",
 				},
 				Source: "node/test1",
 			},
@@ -117,13 +125,12 @@ func TestNodeDiscoveryAdd(t *testing.T) {
 
 func TestNodeDiscoveryDelete(t *testing.T) {
 	obj := makeEnumeratedNode(0)
-	n, c, w := makeDiscovery(RoleNode, NamespaceDiscovery{}, obj)
+	n, c := makeDiscovery(RoleNode, NamespaceDiscovery{}, obj)
 
 	k8sDiscoveryTest{
 		discovery: n,
 		afterStart: func() {
-			c.CoreV1().Nodes().Delete(obj.Name, &metav1.DeleteOptions{})
-			w.Nodes().Delete(obj)
+			c.CoreV1().Nodes().Delete(context.Background(), obj.Name, metav1.DeleteOptions{})
 		},
 		expectedMaxItems: 2,
 		expectedRes: map[string]*targetgroup.Group{
@@ -135,22 +142,21 @@ func TestNodeDiscoveryDelete(t *testing.T) {
 }
 
 func TestNodeDiscoveryUpdate(t *testing.T) {
-	n, c, w := makeDiscovery(RoleNode, NamespaceDiscovery{})
+	n, c := makeDiscovery(RoleNode, NamespaceDiscovery{})
 
 	k8sDiscoveryTest{
 		discovery: n,
 		afterStart: func() {
 			obj1 := makeEnumeratedNode(0)
-			c.CoreV1().Nodes().Create(obj1)
-			w.Nodes().Add(obj1)
+			c.CoreV1().Nodes().Create(context.Background(), obj1, metav1.CreateOptions{})
 			obj2 := makeNode(
 				"test0",
 				"1.2.3.4",
+				"aws:///fr-south-1c/i-49508290343823952",
 				map[string]string{"Unschedulable": "true"},
 				map[string]string{},
 			)
-			c.CoreV1().Nodes().Update(obj2)
-			w.Nodes().Modify(obj2)
+			c.CoreV1().Nodes().Update(context.Background(), obj2, metav1.UpdateOptions{})
 		},
 		expectedMaxItems: 2,
 		expectedRes: map[string]*targetgroup.Group{
@@ -163,8 +169,10 @@ func TestNodeDiscoveryUpdate(t *testing.T) {
 					},
 				},
 				Labels: model.LabelSet{
-					"__meta_kubernetes_node_label_Unschedulable": "true",
-					"__meta_kubernetes_node_name":                "test0",
+					"__meta_kubernetes_node_label_Unschedulable":        "true",
+					"__meta_kubernetes_node_labelpresent_Unschedulable": "true",
+					"__meta_kubernetes_node_name":                       "test0",
+					"__meta_kubernetes_node_provider_id":                "aws:///fr-south-1c/i-49508290343823952",
 				},
 				Source: "node/test0",
 			},
