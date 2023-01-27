@@ -20,13 +20,7 @@ import (
 	"os"
 )
 
-const filePerm = 0644
-
-type archiver interface {
-	write(filename string, b []byte) error
-	close() error
-	filename() string
-}
+const filePerm = 0o666
 
 type tarGzFileWriter struct {
 	tarWriter *tar.Writer
@@ -37,7 +31,7 @@ type tarGzFileWriter struct {
 func newTarGzFileWriter(archiveName string) (*tarGzFileWriter, error) {
 	file, err := os.Create(archiveName)
 	if err != nil {
-		return nil, fmt.Errorf("error creating archive %q: %s", archiveName, err)
+		return nil, fmt.Errorf("error creating archive %q: %w", archiveName, err)
 	}
 	gzw := gzip.NewWriter(file)
 	tw := tar.NewWriter(gzw)
@@ -71,8 +65,4 @@ func (w *tarGzFileWriter) write(filename string, b []byte) error {
 		return err
 	}
 	return nil
-}
-
-func (w *tarGzFileWriter) filename() string {
-	return w.file.Name()
 }

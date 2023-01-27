@@ -15,20 +15,28 @@ package web
 
 import (
 	"bytes"
+	"context"
+	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
+	"github.com/stretchr/testify/require"
+
 	"github.com/prometheus/prometheus/config"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb"
 )
 
 var scenarios = map[string]struct {
 	params         string
-	accept         string
-	externalLabels model.LabelSet
+	externalLabels labels.Labels
 	code           int
 	body           string
 }{
@@ -45,13 +53,13 @@ var scenarios = map[string]struct {
 	"invalid params from the beginning": {
 		params: "match[]=-not-a-valid-metric-name",
 		code:   400,
-		body: `parse error at char 1: vector selector must contain label matchers or metric name
+		body: `1:1: parse error: unexpected <op:->
 `,
 	},
 	"invalid params somewhere in the middle": {
 		params: "match[]=not-a-valid-metric-name",
 		code:   400,
-		body: `parse error at char 4: could not parse remaining input "-a-valid-metric"...
+		body: `1:4: parse error: unexpected <op:->
 `,
 	},
 	"test_metric1": {
@@ -107,6 +115,14 @@ test_metric1{foo="boo",instance="i"} 1 6000000
 test_metric2{foo="boo",instance="i"} 1 6000000
 `,
 	},
+	"two matchers with overlap": {
+		params: "match[]={__name__=~'test_metric1'}&match[]={foo='bar'}",
+		code:   200,
+		body: `# TYPE test_metric1 untyped
+test_metric1{foo="bar",instance="i"} 10000 6000000
+test_metric1{foo="boo",instance="i"} 1 6000000
+`,
+	},
 	"everything": {
 		params: "match[]={__name__=~'.%2b'}", // '%2b' is an URL-encoded '+'.
 		code:   200,
@@ -146,7 +162,7 @@ test_metric_without_labels{instance=""} 1001 6000000
 	},
 	"external labels are added if not already present": {
 		params:         "match[]={__name__=~'.%2b'}", // '%2b' is an URL-encoded '+'.
-		externalLabels: model.LabelSet{"zone": "ie", "foo": "baz"},
+		externalLabels: labels.Labels{{Name: "foo", Value: "baz"}, {Name: "zone", Value: "ie"}},
 		code:           200,
 		body: `# TYPE test_metric1 untyped
 test_metric1{foo="bar",instance="i",zone="ie"} 10000 6000000
@@ -163,7 +179,7 @@ test_metric_without_labels{foo="baz",instance="",zone="ie"} 1001 6000000
 		// This makes no sense as a configuration, but we should
 		// know what it does anyway.
 		params:         "match[]={__name__=~'.%2b'}", // '%2b' is an URL-encoded '+'.
-		externalLabels: model.LabelSet{"instance": "baz"},
+		externalLabels: labels.Labels{{Name: "instance", Value: "baz"}},
 		code:           200,
 		body: `# TYPE test_metric1 untyped
 test_metric1{foo="bar",instance="i"} 10000 6000000
@@ -198,25 +214,69 @@ func TestFederation(t *testing.T) {
 	}
 
 	h := &Handler{
-		storage:     suite.Storage(),
-		queryEngine: suite.QueryEngine(),
-		now:         func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
+		localStorage:  &dbAdapter{suite.TSDB()},
+		lookbackDelta: 5 * time.Minute,
+		now:           func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
 		config: &config.Config{
 			GlobalConfig: config.GlobalConfig{},
 		},
 	}
 
 	for name, scenario := range scenarios {
-		h.config.GlobalConfig.ExternalLabels = scenario.externalLabels
-		req := httptest.NewRequest("GET", "http://example.org/federate?"+scenario.params, nil)
-		res := httptest.NewRecorder()
-		h.federation(res, req)
-		if got, want := res.Code, scenario.code; got != want {
-			t.Errorf("Scenario %q: got code %d, want %d", name, got, want)
-		}
-		if got, want := normalizeBody(res.Body), scenario.body; got != want {
-			t.Errorf("Scenario %q: got body\n%s\n, want\n%s\n", name, got, want)
-		}
+		t.Run(name, func(t *testing.T) {
+			h.config.GlobalConfig.ExternalLabels = scenario.externalLabels
+			req := httptest.NewRequest("GET", "http://example.org/federate?"+scenario.params, nil)
+			res := httptest.NewRecorder()
+
+			h.federation(res, req)
+			require.Equal(t, scenario.code, res.Code)
+			require.Equal(t, scenario.body, normalizeBody(res.Body))
+		})
+	}
+}
+
+type notReadyReadStorage struct {
+	LocalStorage
+}
+
+func (notReadyReadStorage) Querier(context.Context, int64, int64) (storage.Querier, error) {
+	return nil, errors.Wrap(tsdb.ErrNotReady, "wrap")
+}
+
+func (notReadyReadStorage) StartTime() (int64, error) {
+	return 0, errors.Wrap(tsdb.ErrNotReady, "wrap")
+}
+
+func (notReadyReadStorage) Stats(string) (*tsdb.Stats, error) {
+	return nil, errors.Wrap(tsdb.ErrNotReady, "wrap")
+}
+
+// Regression test for https://github.com/prometheus/prometheus/issues/7181.
+func TestFederation_NotReady(t *testing.T) {
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			h := &Handler{
+				localStorage:  notReadyReadStorage{},
+				lookbackDelta: 5 * time.Minute,
+				now:           func() model.Time { return 101 * 60 * 1000 }, // 101min after epoch.
+				config: &config.Config{
+					GlobalConfig: config.GlobalConfig{
+						ExternalLabels: scenario.externalLabels,
+					},
+				},
+			}
+
+			req := httptest.NewRequest("GET", "http://example.org/federate?"+scenario.params, nil)
+			res := httptest.NewRecorder()
+
+			h.federation(res, req)
+			if scenario.code == http.StatusBadRequest {
+				// Request are expected to be checked before DB readiness.
+				require.Equal(t, http.StatusBadRequest, res.Code)
+				return
+			}
+			require.Equal(t, http.StatusServiceUnavailable, res.Code)
+		})
 	}
 }
 

@@ -18,16 +18,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/prometheus/common/model"
-	"golang.org/x/net/context/ctxhttp"
 )
 
 const (
@@ -79,7 +78,7 @@ func (c *Client) Write(samples model.Samples) error {
 	for _, s := range samples {
 		v := float64(s.Value)
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			level.Debug(c.logger).Log("msg", "cannot send value to OpenTSDB, skipping sample", "value", v, "sample", s)
+			level.Debug(c.logger).Log("msg", "Cannot send value to OpenTSDB, skipping sample", "value", v, "sample", s)
 			continue
 		}
 		metric := TagValue(s.Metric[model.MetricNameLabel])
@@ -106,11 +105,19 @@ func (c *Client) Write(samples model.Samples) error {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
 
-	resp, err := ctxhttp.Post(ctx, http.DefaultClient, u.String(), contentTypeJSON, bytes.NewBuffer(buf))
+	req, err := http.NewRequest("POST", u.String(), bytes.NewBuffer(buf))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Content-Type", contentTypeJSON)
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	// API returns status code 204 for successful writes.
 	// http://opentsdb.net/docs/build/html/api_http/put.html
@@ -120,7 +127,7 @@ func (c *Client) Write(samples model.Samples) error {
 
 	// API returns status code 400 on error, encoding error details in the
 	// response content in JSON.
-	buf, err = ioutil.ReadAll(resp.Body)
+	buf, err = io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}

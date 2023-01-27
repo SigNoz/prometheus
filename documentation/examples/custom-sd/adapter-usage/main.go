@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -24,13 +25,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/prometheus/common/model"
+	"gopkg.in/alecthomas/kingpin.v2"
+
 	"github.com/prometheus/prometheus/discovery/targetgroup"
 	"github.com/prometheus/prometheus/documentation/examples/custom-sd/adapter"
 	"github.com/prometheus/prometheus/util/strutil"
-	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 var (
@@ -43,24 +45,18 @@ var (
 	addressLabel = model.MetaLabelPrefix + "consul_address"
 	// nodeLabel is the name for the label containing a target's node name.
 	nodeLabel = model.MetaLabelPrefix + "consul_node"
-	// metaDataLabel is the prefix for the labels mapping to a target's metadata.
-	metaDataLabel = model.MetaLabelPrefix + "consul_metadata_"
 	// tagsLabel is the name of the label containing the tags assigned to the target.
 	tagsLabel = model.MetaLabelPrefix + "consul_tags"
-	// serviceLabel is the name of the label containing the service name.
-	serviceLabel = model.MetaLabelPrefix + "consul_service"
 	// serviceAddressLabel is the name of the label containing the (optional) service address.
 	serviceAddressLabel = model.MetaLabelPrefix + "consul_service_address"
-	//servicePortLabel is the name of the label containing the service port.
+	// servicePortLabel is the name of the label containing the service port.
 	servicePortLabel = model.MetaLabelPrefix + "consul_service_port"
-	// datacenterLabel is the name of the label containing the datacenter ID.
-	datacenterLabel = model.MetaLabelPrefix + "consul_dc"
 	// serviceIDLabel is the name of the label containing the service ID.
 	serviceIDLabel = model.MetaLabelPrefix + "consul_service_id"
 )
 
 // CatalogService is copied from https://github.com/hashicorp/consul/blob/master/api/catalog.go
-// this struct respresents the response from a /service/<service-name> request.
+// this struct represents the response from a /service/<service-name> request.
 // Consul License: https://github.com/hashicorp/consul/blob/master/LICENSE
 type CatalogService struct {
 	ID                       string
@@ -89,12 +85,11 @@ type sdConfig struct {
 // Note: This is the struct with your implementation of the Discoverer interface (see Run function).
 // Discovery retrieves target information from a Consul server and updates them via watches.
 type discovery struct {
-	address          string
-	refreshInterval  int
-	clientDatacenter string
-	tagSeparator     string
-	logger           log.Logger
-	oldSourceList    map[string]bool
+	address         string
+	refreshInterval int
+	tagSeparator    string
+	logger          log.Logger
+	oldSourceList   map[string]bool
 }
 
 func (d *discovery) parseServiceNodes(resp *http.Response, name string) (*targetgroup.Group, error) {
@@ -104,10 +99,17 @@ func (d *discovery) parseServiceNodes(resp *http.Response, name string) (*target
 		Labels: make(model.LabelSet),
 	}
 
-	dec := json.NewDecoder(resp.Body)
-	defer resp.Body.Close()
-	err := dec.Decode(&nodes)
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	err = json.Unmarshal(b, &nodes)
 	if err != nil {
 		return &tgroup, err
 	}
@@ -117,7 +119,7 @@ func (d *discovery) parseServiceNodes(resp *http.Response, name string) (*target
 	for _, node := range nodes {
 		// We surround the separated list with the separator as well. This way regular expressions
 		// in relabeling rules don't have to consider tag positions.
-		var tags = "," + strings.Join(node.ServiceTags, ",") + ","
+		tags := "," + strings.Join(node.ServiceTags, ",") + ","
 
 		// If the service address is not empty it should be used instead of the node address
 		// since the service may be registered remotely through a different node.
@@ -159,15 +161,14 @@ func (d *discovery) Run(ctx context.Context, ch chan<- []*targetgroup.Group) {
 	for c := time.Tick(time.Duration(d.refreshInterval) * time.Second); ; {
 		var srvs map[string][]string
 		resp, err := http.Get(fmt.Sprintf("http://%s/v1/catalog/services", d.address))
-
 		if err != nil {
 			level.Error(d.logger).Log("msg", "Error getting services list", "err", err)
 			time.Sleep(time.Duration(d.refreshInterval) * time.Second)
 			continue
 		}
 
-		dec := json.NewDecoder(resp.Body)
-		err = dec.Decode(&srvs)
+		b, err := io.ReadAll(resp.Body)
+		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		if err != nil {
 			level.Error(d.logger).Log("msg", "Error reading services list", "err", err)
@@ -175,8 +176,16 @@ func (d *discovery) Run(ctx context.Context, ch chan<- []*targetgroup.Group) {
 			continue
 		}
 
+		err = json.Unmarshal(b, &srvs)
+		resp.Body.Close()
+		if err != nil {
+			level.Error(d.logger).Log("msg", "Error parsing services list", "err", err)
+			time.Sleep(time.Duration(d.refreshInterval) * time.Second)
+			continue
+		}
+
 		var tgs []*targetgroup.Group
-		// Note that we treat errors when querying specific consul services as fatal for for this
+		// Note that we treat errors when querying specific consul services as fatal for this
 		// iteration of the time.Tick loop. It's better to have some stale targets than an incomplete
 		// list of targets simply because there may have been a timeout. If the service is actually
 		// gone as far as consul is concerned, that will be picked up during the next iteration of
@@ -192,6 +201,7 @@ func (d *discovery) Run(ctx context.Context, ch chan<- []*targetgroup.Group) {
 				level.Error(d.logger).Log("msg", "Error getting services nodes", "service", name, "err", err)
 				break
 			}
+
 			tg, err := d.parseServiceNodes(resp, name)
 			if err != nil {
 				level.Error(d.logger).Log("msg", "Error parsing services nodes", "service", name, "err", err)

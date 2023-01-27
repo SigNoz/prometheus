@@ -43,11 +43,7 @@ func (m *SDMock) Endpoint() string {
 func (m *SDMock) Setup() {
 	m.Mux = http.NewServeMux()
 	m.Server = httptest.NewServer(m.Mux)
-}
-
-// ShutdownServer creates the mock server
-func (m *SDMock) ShutdownServer() {
-	m.Server.Close()
+	m.t.Cleanup(m.Server.Close)
 }
 
 const tokenID = "cbc36478b0bd8e67e89469c7749d4127"
@@ -58,7 +54,7 @@ func testMethod(t *testing.T, r *http.Request, expected string) {
 	}
 }
 
-func testHeader(t *testing.T, r *http.Request, header string, expected string) {
+func testHeader(t *testing.T, r *http.Request, header, expected string) {
 	if actual := r.Header.Get(header); expected != actual {
 		t.Errorf("Header %s = %s, expected %s", header, actual, expected)
 	}
@@ -247,7 +243,7 @@ func (m *SDMock) HandleHypervisorListSuccessfully() {
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
-		fmt.Fprintf(w, hypervisorListBody)
+		fmt.Fprint(w, hypervisorListBody)
 	})
 }
 
@@ -544,7 +540,7 @@ func (m *SDMock) HandleServerListSuccessfully() {
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
-		fmt.Fprintf(w, serverListBody)
+		fmt.Fprint(w, serverListBody)
 	})
 }
 
@@ -583,6 +579,6 @@ func (m *SDMock) HandleFloatingIPListSuccessfully() {
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
-		fmt.Fprintf(w, listOutput)
+		fmt.Fprint(w, listOutput)
 	})
 }

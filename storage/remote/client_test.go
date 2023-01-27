@@ -15,18 +15,17 @@ package remote
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	config_util "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
-	"github.com/prometheus/prometheus/prompb"
+	"github.com/stretchr/testify/require"
 )
 
 var longErrMessage = strings.Repeat("error message", maxErrMsgLen)
@@ -42,19 +41,19 @@ func TestStoreHTTPErrorHandling(t *testing.T) {
 		},
 		{
 			code: 300,
-			err:  fmt.Errorf("server returned HTTP status 300 Multiple Choices: " + longErrMessage[:maxErrMsgLen]),
+			err:  errors.New("server returned HTTP status 300 Multiple Choices: " + longErrMessage[:maxErrMsgLen]),
 		},
 		{
 			code: 404,
-			err:  fmt.Errorf("server returned HTTP status 404 Not Found: " + longErrMessage[:maxErrMsgLen]),
+			err:  errors.New("server returned HTTP status 404 Not Found: " + longErrMessage[:maxErrMsgLen]),
 		},
 		{
 			code: 500,
-			err:  recoverableError{fmt.Errorf("server returned HTTP status 500 Internal Server Error: " + longErrMessage[:maxErrMsgLen])},
+			err:  RecoverableError{errors.New("server returned HTTP status 500 Internal Server Error: " + longErrMessage[:maxErrMsgLen]), defaultBackoff},
 		},
 	}
 
-	for i, test := range tests {
+	for _, test := range tests {
 		server := httptest.NewServer(
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, longErrMessage, test.code)
@@ -62,23 +61,94 @@ func TestStoreHTTPErrorHandling(t *testing.T) {
 		)
 
 		serverURL, err := url.Parse(server.URL)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 
-		c, err := NewClient(0, &ClientConfig{
+		conf := &ClientConfig{
 			URL:     &config_util.URL{URL: serverURL},
 			Timeout: model.Duration(time.Second),
-		})
-		if err != nil {
-			t.Fatal(err)
 		}
 
-		err = c.Store(context.Background(), &prompb.WriteRequest{})
-		if !reflect.DeepEqual(err, test.err) {
-			t.Errorf("%d. Unexpected error; want %v, got %v", i, test.err, err)
+		hash, err := toHash(conf)
+		require.NoError(t, err)
+		c, err := NewWriteClient(hash, conf)
+		require.NoError(t, err)
+
+		err = c.Store(context.Background(), []byte{})
+		if test.err != nil {
+			require.EqualError(t, err, test.err.Error())
+		} else {
+			require.NoError(t, err)
 		}
 
 		server.Close()
+	}
+}
+
+func TestClientRetryAfter(t *testing.T) {
+	server := httptest.NewServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, longErrMessage, 429)
+		}),
+	)
+	defer server.Close()
+
+	getClient := func(conf *ClientConfig) WriteClient {
+		hash, err := toHash(conf)
+		require.NoError(t, err)
+		c, err := NewWriteClient(hash, conf)
+		require.NoError(t, err)
+		return c
+	}
+
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+
+	conf := &ClientConfig{
+		URL:              &config_util.URL{URL: serverURL},
+		Timeout:          model.Duration(time.Second),
+		RetryOnRateLimit: false,
+	}
+
+	c := getClient(conf)
+	err = c.Store(context.Background(), []byte{})
+	_, ok := err.(RecoverableError)
+	require.False(t, ok, "Recoverable error not expected.")
+
+	conf = &ClientConfig{
+		URL:              &config_util.URL{URL: serverURL},
+		Timeout:          model.Duration(time.Second),
+		RetryOnRateLimit: true,
+	}
+
+	c = getClient(conf)
+	err = c.Store(context.Background(), []byte{})
+	_, ok = err.(RecoverableError)
+	require.True(t, ok, "Recoverable error was expected.")
+}
+
+func TestRetryAfterDuration(t *testing.T) {
+	tc := []struct {
+		name     string
+		tInput   string
+		expected model.Duration
+	}{
+		{
+			name:     "seconds",
+			tInput:   "120",
+			expected: model.Duration(time.Second * 120),
+		},
+		{
+			name:     "date-time default",
+			tInput:   time.RFC1123, // Expected layout is http.TimeFormat, hence an error.
+			expected: defaultBackoff,
+		},
+		{
+			name:     "retry-after not provided",
+			tInput:   "", // Expected layout is http.TimeFormat, hence an error.
+			expected: defaultBackoff,
+		},
+	}
+	for _, c := range tc {
+		require.Equal(t, c.expected, retryAfterDuration(c.tInput), c.name)
 	}
 }

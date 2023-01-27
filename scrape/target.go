@@ -14,7 +14,6 @@
 package scrape
 
 import (
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -23,14 +22,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
-	"github.com/prometheus/prometheus/pkg/labels"
-	"github.com/prometheus/prometheus/pkg/relabel"
-	"github.com/prometheus/prometheus/pkg/textparse"
-	"github.com/prometheus/prometheus/pkg/value"
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
+	"github.com/prometheus/prometheus/model/textparse"
+	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/storage"
 )
 
@@ -50,7 +50,7 @@ type Target struct {
 	discoveredLabels labels.Labels
 	// Any labels that are added to this target and its metrics.
 	labels labels.Labels
-	// Additional URL parmeters that are part of the target URL.
+	// Additional URL parameters that are part of the target URL.
 	params url.Values
 
 	mtx                sync.RWMutex
@@ -58,7 +58,7 @@ type Target struct {
 	lastScrape         time.Time
 	lastScrapeDuration time.Duration
 	health             TargetHealth
-	metadata           metricMetadataStore
+	metadata           MetricMetadataStore
 }
 
 // NewTarget creates a reasonably configured target for querying.
@@ -75,9 +75,12 @@ func (t *Target) String() string {
 	return t.URL().String()
 }
 
-type metricMetadataStore interface {
-	listMetadata() []MetricMetadata
-	getMetadata(metric string) (MetricMetadata, bool)
+// MetricMetadataStore represents a storage for metadata.
+type MetricMetadataStore interface {
+	ListMetadata() []MetricMetadata
+	GetMetadata(metric string) (MetricMetadata, bool)
+	SizeMetadata() int
+	LengthMetadata() int
 }
 
 // MetricMetadata is a piece of metadata for a metric.
@@ -95,7 +98,29 @@ func (t *Target) MetadataList() []MetricMetadata {
 	if t.metadata == nil {
 		return nil
 	}
-	return t.metadata.listMetadata()
+	return t.metadata.ListMetadata()
+}
+
+func (t *Target) MetadataSize() int {
+	t.mtx.RLock()
+	defer t.mtx.RUnlock()
+
+	if t.metadata == nil {
+		return 0
+	}
+
+	return t.metadata.SizeMetadata()
+}
+
+func (t *Target) MetadataLength() int {
+	t.mtx.RLock()
+	defer t.mtx.RUnlock()
+
+	if t.metadata == nil {
+		return 0
+	}
+
+	return t.metadata.LengthMetadata()
 }
 
 // Metadata returns type and help metadata for the given metric.
@@ -106,10 +131,10 @@ func (t *Target) Metadata(metric string) (MetricMetadata, bool) {
 	if t.metadata == nil {
 		return MetricMetadata{}, false
 	}
-	return t.metadata.getMetadata(metric)
+	return t.metadata.GetMetadata(metric)
 }
 
-func (t *Target) setMetadataStore(s metricMetadataStore) {
+func (t *Target) SetMetadataStore(s MetricMetadataStore) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	t.metadata = s
@@ -118,19 +143,24 @@ func (t *Target) setMetadataStore(s metricMetadataStore) {
 // hash returns an identifying hash for the target.
 func (t *Target) hash() uint64 {
 	h := fnv.New64a()
+
+	//nolint: errcheck
 	h.Write([]byte(fmt.Sprintf("%016d", t.labels.Hash())))
+	//nolint: errcheck
 	h.Write([]byte(t.URL().String()))
 
 	return h.Sum64()
 }
 
 // offset returns the time until the next scrape cycle for the target.
-func (t *Target) offset(interval time.Duration) time.Duration {
+// It includes the global server jitterSeed for scrapes from multiple Prometheus to try to be at different times.
+func (t *Target) offset(interval time.Duration, jitterSeed uint64) time.Duration {
 	now := time.Now().UnixNano()
 
+	// Base is a pinned to absolute time, no matter how often offset is called.
 	var (
-		base   = now % int64(interval)
-		offset = t.hash() % uint64(interval)
+		base   = int64(interval) - now%int64(interval)
+		offset = (t.hash() ^ jitterSeed) % uint64(interval)
 		next   = base + int64(offset)
 	)
 
@@ -196,7 +226,8 @@ func (t *Target) URL() *url.URL {
 	}
 }
 
-func (t *Target) report(start time.Time, dur time.Duration, err error) {
+// Report sets target data about the last scrape.
+func (t *Target) Report(start time.Time, dur time.Duration, err error) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 
@@ -243,6 +274,31 @@ func (t *Target) Health() TargetHealth {
 	return t.health
 }
 
+// intervalAndTimeout returns the interval and timeout derived from
+// the targets labels.
+func (t *Target) intervalAndTimeout(defaultInterval, defaultDuration time.Duration) (time.Duration, time.Duration, error) {
+	t.mtx.RLock()
+	defer t.mtx.RUnlock()
+
+	intervalLabel := t.labels.Get(model.ScrapeIntervalLabel)
+	interval, err := model.ParseDuration(intervalLabel)
+	if err != nil {
+		return defaultInterval, defaultDuration, errors.Errorf("Error parsing interval label %q: %v", intervalLabel, err)
+	}
+	timeoutLabel := t.labels.Get(model.ScrapeTimeoutLabel)
+	timeout, err := model.ParseDuration(timeoutLabel)
+	if err != nil {
+		return defaultInterval, defaultDuration, errors.Errorf("Error parsing timeout label %q: %v", timeoutLabel, err)
+	}
+
+	return time.Duration(interval), time.Duration(timeout), nil
+}
+
+// GetValue gets a label value from the entire label set.
+func (t *Target) GetValue(name string) string {
+	return t.labels.Get(name)
+}
+
 // Targets is a sortable list of targets.
 type Targets []*Target
 
@@ -260,29 +316,18 @@ type limitAppender struct {
 	i     int
 }
 
-func (app *limitAppender) Add(lset labels.Labels, t int64, v float64) (uint64, error) {
+func (app *limitAppender) Append(ref storage.SeriesRef, lset labels.Labels, t int64, v float64) (storage.SeriesRef, error) {
 	if !value.IsStaleNaN(v) {
 		app.i++
 		if app.i > app.limit {
 			return 0, errSampleLimit
 		}
 	}
-	ref, err := app.Appender.Add(lset, t, v)
+	ref, err := app.Appender.Append(ref, lset, t, v)
 	if err != nil {
 		return 0, err
 	}
 	return ref, nil
-}
-
-func (app *limitAppender) AddFast(lset labels.Labels, ref uint64, t int64, v float64) error {
-	if !value.IsStaleNaN(v) {
-		app.i++
-		if app.i > app.limit {
-			return errSampleLimit
-		}
-	}
-	err := app.Appender.AddFast(lset, ref, t, v)
-	return err
 }
 
 type timeLimitAppender struct {
@@ -291,33 +336,27 @@ type timeLimitAppender struct {
 	maxTime int64
 }
 
-func (app *timeLimitAppender) Add(lset labels.Labels, t int64, v float64) (uint64, error) {
+func (app *timeLimitAppender) Append(ref storage.SeriesRef, lset labels.Labels, t int64, v float64) (storage.SeriesRef, error) {
 	if t > app.maxTime {
 		return 0, storage.ErrOutOfBounds
 	}
 
-	ref, err := app.Appender.Add(lset, t, v)
+	ref, err := app.Appender.Append(ref, lset, t, v)
 	if err != nil {
 		return 0, err
 	}
 	return ref, nil
 }
 
-func (app *timeLimitAppender) AddFast(lset labels.Labels, ref uint64, t int64, v float64) error {
-	if t > app.maxTime {
-		return storage.ErrOutOfBounds
-	}
-	err := app.Appender.AddFast(lset, ref, t, v)
-	return err
-}
-
-// populateLabels builds a label set from the given label set and scrape configuration.
+// PopulateLabels builds a label set from the given label set and scrape configuration.
 // It returns a label set before relabeling was applied as the second return value.
 // Returns the original discovered label set found before relabelling was applied if the target is dropped during relabeling.
-func populateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig labels.Labels, err error) {
+func PopulateLabels(lset labels.Labels, cfg *config.ScrapeConfig, noDefaultPort bool) (res, orig labels.Labels, err error) {
 	// Copy labels into the labelset for the target if they are not set already.
 	scrapeLabels := []labels.Label{
 		{Name: model.JobLabel, Value: cfg.JobName},
+		{Name: model.ScrapeIntervalLabel, Value: cfg.ScrapeInterval.String()},
+		{Name: model.ScrapeTimeoutLabel, Value: cfg.ScrapeTimeout.String()},
 		{Name: model.MetricsPathLabel, Value: cfg.MetricsPath},
 		{Name: model.SchemeLabel, Value: cfg.Scheme},
 	}
@@ -335,7 +374,7 @@ func populateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 		}
 	}
 
-	preRelabelLabels := lb.Labels()
+	preRelabelLabels := lb.Labels(nil)
 	lset = relabel.Process(preRelabelLabels, cfg.RelabelConfigs...)
 
 	// Check if the target was dropped.
@@ -343,40 +382,81 @@ func populateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 		return nil, preRelabelLabels, nil
 	}
 	if v := lset.Get(model.AddressLabel); v == "" {
-		return nil, nil, fmt.Errorf("no address")
+		return nil, nil, errors.New("no address")
 	}
 
 	lb = labels.NewBuilder(lset)
 
 	// addPort checks whether we should add a default port to the address.
 	// If the address is not valid, we don't append a port either.
-	addPort := func(s string) bool {
+	addPort := func(s string) (string, string, bool) {
 		// If we can split, a port exists and we don't have to add one.
-		if _, _, err := net.SplitHostPort(s); err == nil {
-			return false
+		if host, port, err := net.SplitHostPort(s); err == nil {
+			return host, port, false
 		}
 		// If adding a port makes it valid, the previous error
 		// was not due to an invalid address and we can append a port.
 		_, _, err := net.SplitHostPort(s + ":1234")
-		return err == nil
+		return "", "", err == nil
 	}
+
 	addr := lset.Get(model.AddressLabel)
-	// If it's an address with no trailing port, infer it based on the used scheme.
-	if addPort(addr) {
+	scheme := lset.Get(model.SchemeLabel)
+	host, port, add := addPort(addr)
+	// If it's an address with no trailing port, infer it based on the used scheme
+	// unless the no-default-scrape-port feature flag is present.
+	if !noDefaultPort && add {
 		// Addresses reaching this point are already wrapped in [] if necessary.
-		switch lset.Get(model.SchemeLabel) {
+		switch scheme {
 		case "http", "":
 			addr = addr + ":80"
 		case "https":
 			addr = addr + ":443"
 		default:
-			return nil, nil, fmt.Errorf("invalid scheme: %q", cfg.Scheme)
+			return nil, nil, errors.Errorf("invalid scheme: %q", cfg.Scheme)
 		}
 		lb.Set(model.AddressLabel, addr)
 	}
 
+	if noDefaultPort {
+		// If it's an address with a trailing default port and the
+		// no-default-scrape-port flag is present, remove the port.
+		switch port {
+		case "80":
+			if scheme == "http" {
+				lb.Set(model.AddressLabel, host)
+			}
+		case "443":
+			if scheme == "https" {
+				lb.Set(model.AddressLabel, host)
+			}
+		}
+	}
+
 	if err := config.CheckTargetAddress(model.LabelValue(addr)); err != nil {
 		return nil, nil, err
+	}
+
+	interval := lset.Get(model.ScrapeIntervalLabel)
+	intervalDuration, err := model.ParseDuration(interval)
+	if err != nil {
+		return nil, nil, errors.Errorf("error parsing scrape interval: %v", err)
+	}
+	if time.Duration(intervalDuration) == 0 {
+		return nil, nil, errors.New("scrape interval cannot be 0")
+	}
+
+	timeout := lset.Get(model.ScrapeTimeoutLabel)
+	timeoutDuration, err := model.ParseDuration(timeout)
+	if err != nil {
+		return nil, nil, errors.Errorf("error parsing scrape timeout: %v", err)
+	}
+	if time.Duration(timeoutDuration) == 0 {
+		return nil, nil, errors.New("scrape timeout cannot be 0")
+	}
+
+	if timeoutDuration > intervalDuration {
+		return nil, nil, errors.Errorf("scrape timeout cannot be greater than scrape interval (%q > %q)", timeout, interval)
 	}
 
 	// Meta labels are deleted after relabelling. Other internal labels propagate to
@@ -392,19 +472,20 @@ func populateLabels(lset labels.Labels, cfg *config.ScrapeConfig) (res, orig lab
 		lb.Set(model.InstanceLabel, addr)
 	}
 
-	res = lb.Labels()
+	res = lb.Labels(nil)
 	for _, l := range res {
 		// Check label values are valid, drop the target if not.
 		if !model.LabelValue(l.Value).IsValid() {
-			return nil, nil, fmt.Errorf("invalid label value for %q: %q", l.Name, l.Value)
+			return nil, nil, errors.Errorf("invalid label value for %q: %q", l.Name, l.Value)
 		}
 	}
 	return res, preRelabelLabels, nil
 }
 
-// targetsFromGroup builds targets based on the given TargetGroup and config.
-func targetsFromGroup(tg *targetgroup.Group, cfg *config.ScrapeConfig) ([]*Target, error) {
+// TargetsFromGroup builds targets based on the given TargetGroup and config.
+func TargetsFromGroup(tg *targetgroup.Group, cfg *config.ScrapeConfig, noDefaultPort bool) ([]*Target, []error) {
 	targets := make([]*Target, 0, len(tg.Targets))
+	failures := []error{}
 
 	for i, tlset := range tg.Targets {
 		lbls := make([]labels.Label, 0, len(tlset)+len(tg.Labels))
@@ -420,13 +501,13 @@ func targetsFromGroup(tg *targetgroup.Group, cfg *config.ScrapeConfig) ([]*Targe
 
 		lset := labels.New(lbls...)
 
-		lbls, origLabels, err := populateLabels(lset, cfg)
+		lbls, origLabels, err := PopulateLabels(lset, cfg, noDefaultPort)
 		if err != nil {
-			return nil, fmt.Errorf("instance %d in group %s: %s", i, tg, err)
+			failures = append(failures, errors.Wrapf(err, "instance %d in group %s", i, tg))
 		}
 		if lbls != nil || origLabels != nil {
 			targets = append(targets, NewTarget(lbls, origLabels, cfg.Params))
 		}
 	}
-	return targets, nil
+	return targets, failures
 }
