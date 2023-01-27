@@ -1156,21 +1156,6 @@ func (m *Manager) RuleGroups() []*Group {
 	return rgs
 }
 
-// RuleGroups returns the list of manager's rule groups.
-func (m *Manager) RuleGroupsWithoutLock() []*Group {
-
-	rgs := make([]*Group, 0, len(m.groups))
-	for _, g := range m.groups {
-		rgs = append(rgs, g)
-	}
-
-	sort.Slice(rgs, func(i, j int) bool {
-		return rgs[i].file < rgs[j].file && rgs[i].name < rgs[j].name
-	})
-
-	return rgs
-}
-
 // Rules returns the list of the manager's rules.
 func (m *Manager) Rules() []Rule {
 	m.mtx.RLock()
