@@ -22,7 +22,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/timestamp"
-	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/template"
 	yaml "gopkg.in/yaml.v2"
 )
@@ -111,7 +111,7 @@ func (r *Rule) Validate() (errs []error) {
 
 	if r.Expr == "" {
 		errs = append(errs, errors.Errorf("field 'expr' must be set in rule"))
-	} else if _, err := promql.ParseExpr(r.Expr); err != nil {
+	} else if _, err := parser.ParseExpr(r.Expr); err != nil {
 		errs = append(errs, errors.Errorf("could not parse expression: %s", err))
 	}
 	if r.Record != "" {
@@ -155,7 +155,7 @@ func testTemplateParsing(rl *Rule) (errs []error) {
 	}
 
 	// Trying to parse templates.
-	tmplData := template.AlertTemplateData(make(map[string]string), 0)
+	tmplData := template.AlertTemplateData(make(map[string]string), make(map[string]string), "", 0)
 	defs := "{{$labels := .Labels}}{{$value := .Value}}"
 	parseTest := func(text string) error {
 		tmpl := template.NewTemplateExpander(
@@ -166,6 +166,7 @@ func testTemplateParsing(rl *Rule) (errs []error) {
 			model.Time(timestamp.FromTime(time.Now())),
 			nil,
 			nil,
+			make([]string, 0),
 		)
 		return tmpl.ParseTest()
 	}

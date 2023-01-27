@@ -68,7 +68,7 @@ func (ch *clickHouse) readRawSQL(ctx context.Context, query string, ts int64) (*
 			return nil, err
 		}
 
-		labels := make([]*prompb.Label, 0, len(columns))
+		labels := make([]prompb.Label, 0, len(columns))
 		var value float64
 		for i, c := range columns {
 			v := targets[i].(*scanner)
@@ -76,7 +76,7 @@ func (ch *clickHouse) readRawSQL(ctx context.Context, query string, ts int64) (*
 			case "value":
 				value = v.f
 			default:
-				labels = append(labels, &prompb.Label{
+				labels = append(labels, prompb.Label{
 					Name:  c,
 					Value: v.s,
 				})
