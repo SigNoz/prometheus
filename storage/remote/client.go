@@ -36,6 +36,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/prometheus/prometheus/prompb"
+	"github.com/prometheus/prometheus/storage/base"
+	"github.com/prometheus/prometheus/storage/clickhouse"
 )
 
 const maxErrMsgLen = 1024
@@ -83,6 +85,7 @@ type Client struct {
 	url        *config_util.URL
 	Client     *http.Client
 	timeout    time.Duration
+	ch         base.Storage
 
 	retryOnRateLimit bool
 
@@ -114,6 +117,19 @@ func NewReadClient(name string, conf *ClientConfig) (ReadClient, error) {
 		return nil, err
 	}
 
+	params := &clickhouse.ClickHouseParams{
+		DSN:                  conf.URL.String(),
+		DropDatabase:         false,
+		MaxOpenConns:         75,
+		MaxTimeSeriesInQuery: 50,
+	}
+
+	ch, err := clickhouse.NewClickHouse(params)
+
+	if err != nil {
+		return nil, err
+	}
+
 	t := httpClient.Transport
 	if len(conf.Headers) > 0 {
 		t = newInjectHeadersRoundTripper(conf.Headers, t)
@@ -125,6 +141,7 @@ func NewReadClient(name string, conf *ClientConfig) (ReadClient, error) {
 		url:                 conf.URL,
 		Client:              httpClient,
 		timeout:             time.Duration(conf.Timeout),
+		ch:                  ch,
 		readQueries:         remoteReadQueries.WithLabelValues(name, conf.URL.String()),
 		readQueriesTotal:    remoteReadQueriesTotal.MustCurryWith(prometheus.Labels{remoteName: name, endpoint: conf.URL.String()}),
 		readQueriesDuration: remoteReadQueryDuration.WithLabelValues(name, conf.URL.String()),
@@ -262,6 +279,7 @@ func (c Client) Endpoint() string {
 func (c *Client) Read(ctx context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
 	c.readQueries.Inc()
 	defer c.readQueries.Dec()
+	return c.ch.Read(ctx, query)
 
 	req := &prompb.ReadRequest{
 		// TODO: Support batching multiple queries into one read request,
