@@ -28,7 +28,7 @@ type Samples interface {
 
 type Sample interface {
 	T() int64
-	V() float64
+	F() float64
 	H() *histogram.Histogram
 	FH() *histogram.FloatHistogram
 	Type() chunkenc.ValueType
@@ -40,12 +40,13 @@ func (s SampleSlice) Get(i int) Sample { return s[i] }
 func (s SampleSlice) Len() int         { return len(s) }
 
 // ChunkFromSamples requires all samples to have the same type.
-func ChunkFromSamples(s []Sample) chunks.Meta {
+func ChunkFromSamples(s []Sample) (chunks.Meta, error) {
 	return ChunkFromSamplesGeneric(SampleSlice(s))
 }
 
 // ChunkFromSamplesGeneric requires all samples to have the same type.
-func ChunkFromSamplesGeneric(s Samples) chunks.Meta {
+func ChunkFromSamplesGeneric(s Samples) (chunks.Meta, error) {
+	emptyChunk := chunks.Meta{Chunk: chunkenc.NewXORChunk()}
 	mint, maxt := int64(0), int64(0)
 
 	if s.Len() > 0 {
@@ -53,25 +54,38 @@ func ChunkFromSamplesGeneric(s Samples) chunks.Meta {
 	}
 
 	if s.Len() == 0 {
-		return chunks.Meta{
-			Chunk: chunkenc.NewXORChunk(),
-		}
+		return emptyChunk, nil
 	}
 
 	sampleType := s.Get(0).Type()
 	c, err := chunkenc.NewEmptyChunk(sampleType.ChunkEncoding())
 	if err != nil {
-		panic(err) // TODO(codesome): dont panic.
+		return chunks.Meta{}, err
 	}
 
 	ca, _ := c.Appender()
+	var newChunk chunkenc.Chunk
 
 	for i := 0; i < s.Len(); i++ {
 		switch sampleType {
 		case chunkenc.ValFloat:
-			ca.Append(s.Get(i).T(), s.Get(i).V())
+			ca.Append(s.Get(i).T(), s.Get(i).F())
 		case chunkenc.ValHistogram:
-			ca.AppendHistogram(s.Get(i).T(), s.Get(i).H())
+			newChunk, _, ca, err = ca.AppendHistogram(nil, s.Get(i).T(), s.Get(i).H(), false)
+			if err != nil {
+				return emptyChunk, err
+			}
+			if newChunk != nil {
+				return emptyChunk, fmt.Errorf("did not expect to start a second chunk")
+			}
+		case chunkenc.ValFloatHistogram:
+			newChunk, _, ca, err = ca.AppendFloatHistogram(nil, s.Get(i).T(), s.Get(i).FH(), false)
+			if err != nil {
+				return emptyChunk, err
+			}
+			if newChunk != nil {
+				return emptyChunk, fmt.Errorf("did not expect to start a second chunk")
+			}
 		default:
 			panic(fmt.Sprintf("unknown sample type %s", sampleType.String()))
 		}
@@ -80,12 +94,12 @@ func ChunkFromSamplesGeneric(s Samples) chunks.Meta {
 		MinTime: mint,
 		MaxTime: maxt,
 		Chunk:   c,
-	}
+	}, nil
 }
 
 type sample struct {
 	t  int64
-	v  float64
+	f  float64
 	h  *histogram.Histogram
 	fh *histogram.FloatHistogram
 }
@@ -94,8 +108,8 @@ func (s sample) T() int64 {
 	return s.t
 }
 
-func (s sample) V() float64 {
-	return s.v
+func (s sample) F() float64 {
+	return s.f
 }
 
 func (s sample) H() *histogram.Histogram {
@@ -118,22 +132,28 @@ func (s sample) Type() chunkenc.ValueType {
 }
 
 // PopulatedChunk creates a chunk populated with samples every second starting at minTime
-func PopulatedChunk(numSamples int, minTime int64) chunks.Meta {
+func PopulatedChunk(numSamples int, minTime int64) (chunks.Meta, error) {
 	samples := make([]Sample, numSamples)
 	for i := 0; i < numSamples; i++ {
-		samples[i] = sample{t: minTime + int64(i*1000), v: 1.0}
+		samples[i] = sample{t: minTime + int64(i*1000), f: 1.0}
 	}
 	return ChunkFromSamples(samples)
 }
 
 // GenerateSamples starting at start and counting up numSamples.
 func GenerateSamples(start, numSamples int) []Sample {
+	return generateSamples(start, numSamples, func(i int) Sample {
+		return sample{
+			t: int64(i),
+			f: float64(i),
+		}
+	})
+}
+
+func generateSamples(start, numSamples int, gen func(int) Sample) []Sample {
 	samples := make([]Sample, 0, numSamples)
 	for i := start; i < start+numSamples; i++ {
-		samples = append(samples, sample{
-			t: int64(i),
-			v: float64(i),
-		})
+		samples = append(samples, gen(i))
 	}
 	return samples
 }

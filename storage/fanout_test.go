@@ -86,11 +86,12 @@ func TestFanout_SelectSorted(t *testing.T) {
 
 		result := make(map[int64]float64)
 		var labelsResult labels.Labels
+		var iterator chunkenc.Iterator
 		for seriesSet.Next() {
 			series := seriesSet.At()
 			seriesLabels := series.Labels()
 			labelsResult = seriesLabels
-			iterator := series.Iterator()
+			iterator := series.Iterator(iterator)
 			for iterator.Next() == chunkenc.ValFloat {
 				timestamp, value := iterator.At()
 				result[timestamp] = value
@@ -112,11 +113,12 @@ func TestFanout_SelectSorted(t *testing.T) {
 
 		result := make(map[int64]float64)
 		var labelsResult labels.Labels
+		var iterator chunkenc.Iterator
 		for seriesSet.Next() {
 			series := seriesSet.At()
 			seriesLabels := series.Labels()
 			labelsResult = seriesLabels
-			iterator := series.Iterator()
+			iterator := series.Iterator(iterator)
 			for iterator.Next() == chunkenc.ValFloat {
 				timestamp, value := iterator.At()
 				result[timestamp] = value
@@ -231,7 +233,7 @@ func (errQuerier) Select(bool, *storage.SelectHints, ...*labels.Matcher) storage
 	return storage.ErrSeriesSet(errSelect)
 }
 
-func (errQuerier) LabelValues(name string, matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
+func (errQuerier) LabelValues(string, ...*labels.Matcher) ([]string, storage.Warnings, error) {
 	return nil, nil, errors.New("label values error")
 }
 
