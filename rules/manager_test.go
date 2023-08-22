@@ -38,6 +38,7 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 	"github.com/prometheus/prometheus/util/teststorage"
 )
 
@@ -46,16 +47,12 @@ func TestMain(m *testing.M) {
 }
 
 func TestAlertingRule(t *testing.T) {
-	suite, err := promql.NewTest(t, `
+	storage := promql.LoadedStorage(t, `
 		load 5m
 			http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75 85  95 105 105  95  85
 			http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	80 90 100 110 120 130 140
 	`)
-	require.NoError(t, err)
-	defer suite.Close()
-
-	err = suite.Run()
-	require.NoError(t, err)
+	t.Cleanup(func() { storage.Close() })
 
 	expr, err := parser.ParseExpr(`http_requests{group="canary", job="app-server"} < 100`)
 	require.NoError(t, err)
@@ -64,6 +61,7 @@ func TestAlertingRule(t *testing.T) {
 		"HTTPRequestRateLow",
 		expr,
 		time.Minute,
+		0,
 		labels.FromStrings("severity", "{{\"c\"}}ritical"),
 		labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil,
 	)
@@ -78,7 +76,7 @@ func TestAlertingRule(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -90,7 +88,7 @@ func TestAlertingRule(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -102,7 +100,7 @@ func TestAlertingRule(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -114,7 +112,7 @@ func TestAlertingRule(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 	}
 
@@ -159,7 +157,7 @@ func TestAlertingRule(t *testing.T) {
 
 		evalTime := baseTime.Add(test.time)
 
-		res, err := rule.Eval(suite.Context(), evalTime, EngineQueryFunc(suite.QueryEngine(), suite.Storage()), nil, 0)
+		res, err := rule.Eval(context.TODO(), evalTime, EngineQueryFunc(testEngine, storage), nil, 0)
 		require.NoError(t, err)
 
 		var filteredRes promql.Vector // After removing 'ALERTS_FOR_STATE' samples.
@@ -189,16 +187,12 @@ func TestAlertingRule(t *testing.T) {
 }
 
 func TestForStateAddSamples(t *testing.T) {
-	suite, err := promql.NewTest(t, `
+	storage := promql.LoadedStorage(t, `
 		load 5m
 			http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75 85  95 105 105  95  85
 			http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	80 90 100 110 120 130 140
 	`)
-	require.NoError(t, err)
-	defer suite.Close()
-
-	err = suite.Run()
-	require.NoError(t, err)
+	t.Cleanup(func() { storage.Close() })
 
 	expr, err := parser.ParseExpr(`http_requests{group="canary", job="app-server"} < 100`)
 	require.NoError(t, err)
@@ -207,6 +201,7 @@ func TestForStateAddSamples(t *testing.T) {
 		"HTTPRequestRateLow",
 		expr,
 		time.Minute,
+		0,
 		labels.FromStrings("severity", "{{\"c\"}}ritical"),
 		labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil,
 	)
@@ -220,7 +215,7 @@ func TestForStateAddSamples(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -231,7 +226,7 @@ func TestForStateAddSamples(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -242,7 +237,7 @@ func TestForStateAddSamples(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 		promql.Sample{
 			Metric: labels.FromStrings(
@@ -253,7 +248,7 @@ func TestForStateAddSamples(t *testing.T) {
 				"job", "app-server",
 				"severity", "critical",
 			),
-			Point: promql.Point{V: 1},
+			F: 1,
 		},
 	}
 
@@ -308,7 +303,7 @@ func TestForStateAddSamples(t *testing.T) {
 			forState = float64(value.StaleNaN)
 		}
 
-		res, err := rule.Eval(suite.Context(), evalTime, EngineQueryFunc(suite.QueryEngine(), suite.Storage()), nil, 0)
+		res, err := rule.Eval(context.TODO(), evalTime, EngineQueryFunc(testEngine, storage), nil, 0)
 		require.NoError(t, err)
 
 		var filteredRes promql.Vector // After removing 'ALERTS' samples.
@@ -324,8 +319,8 @@ func TestForStateAddSamples(t *testing.T) {
 		for i := range test.result {
 			test.result[i].T = timestamp.FromTime(evalTime)
 			// Updating the expected 'for' state.
-			if test.result[i].V >= 0 {
-				test.result[i].V = forState
+			if test.result[i].F >= 0 {
+				test.result[i].F = forState
 			}
 		}
 		require.Equal(t, len(test.result), len(filteredRes), "%d. Number of samples in expected and actual output don't match (%d vs. %d)", i, len(test.result), len(res))
@@ -350,24 +345,20 @@ func sortAlerts(items []*Alert) {
 }
 
 func TestForStateRestore(t *testing.T) {
-	suite, err := promql.NewTest(t, `
+	storage := promql.LoadedStorage(t, `
 		load 5m
 		http_requests{job="app-server", instance="0", group="canary", severity="overwrite-me"}	75  85 50 0 0 25 0 0 40 0 120
 		http_requests{job="app-server", instance="1", group="canary", severity="overwrite-me"}	125 90 60 0 0 25 0 0 40 0 130
 	`)
-	require.NoError(t, err)
-	defer suite.Close()
-
-	err = suite.Run()
-	require.NoError(t, err)
+	t.Cleanup(func() { storage.Close() })
 
 	expr, err := parser.ParseExpr(`http_requests{group="canary", job="app-server"} < 100`)
 	require.NoError(t, err)
 
 	opts := &ManagerOptions{
-		QueryFunc:       EngineQueryFunc(suite.QueryEngine(), suite.Storage()),
-		Appendable:      suite.Storage(),
-		Queryable:       suite.Storage(),
+		QueryFunc:       EngineQueryFunc(testEngine, storage),
+		Appendable:      storage,
+		Queryable:       storage,
 		Context:         context.Background(),
 		Logger:          log.NewNopLogger(),
 		NotifyFunc:      func(ctx context.Context, expr string, alerts ...*Alert) {},
@@ -381,6 +372,7 @@ func TestForStateRestore(t *testing.T) {
 		"HTTPRequestRateLow",
 		expr,
 		alertForDuration,
+		0,
 		labels.FromStrings("severity", "critical"),
 		labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil,
 	)
@@ -400,7 +392,7 @@ func TestForStateRestore(t *testing.T) {
 	baseTime := time.Unix(0, 0)
 	for _, duration := range initialRuns {
 		evalTime := baseTime.Add(duration)
-		group.Eval(suite.Context(), evalTime)
+		group.Eval(context.TODO(), evalTime)
 	}
 
 	exp := rule.ActiveAlerts()
@@ -447,6 +439,7 @@ func TestForStateRestore(t *testing.T) {
 			"HTTPRequestRateLow",
 			expr,
 			alertForDuration,
+			0,
 			labels.FromStrings("severity", "critical"),
 			labels.EmptyLabels(), labels.EmptyLabels(), "", false, nil,
 		)
@@ -463,7 +456,7 @@ func TestForStateRestore(t *testing.T) {
 
 		restoreTime := baseTime.Add(tst.restoreDuration)
 		// First eval before restoration.
-		newGroup.Eval(suite.Context(), restoreTime)
+		newGroup.Eval(context.TODO(), restoreTime)
 		// Restore happens here.
 		newGroup.RestoreForState(restoreTime)
 
@@ -476,17 +469,18 @@ func TestForStateRestore(t *testing.T) {
 		})
 
 		// Checking if we have restored it correctly.
-		if tst.noRestore {
+		switch {
+		case tst.noRestore:
 			require.Equal(t, tst.num, len(got))
 			for _, e := range got {
 				require.Equal(t, e.ActiveAt, restoreTime)
 			}
-		} else if tst.gracePeriod {
+		case tst.gracePeriod:
 			require.Equal(t, tst.num, len(got))
 			for _, e := range got {
 				require.Equal(t, opts.ForGracePeriod, e.ActiveAt.Add(alertForDuration).Sub(restoreTime))
 			}
-		} else {
+		default:
 			exp := tst.alerts
 			require.Equal(t, len(exp), len(got))
 			sortAlerts(exp)
@@ -509,7 +503,7 @@ func TestForStateRestore(t *testing.T) {
 	// Testing the grace period.
 	for _, duration := range []time.Duration{10 * time.Minute, 15 * time.Minute, 20 * time.Minute} {
 		evalTime := baseTime.Add(duration)
-		group.Eval(suite.Context(), evalTime)
+		group.Eval(context.TODO(), evalTime)
 	}
 	testFunc(testInput{
 		restoreDuration: 25 * time.Minute,
@@ -579,28 +573,29 @@ func TestStaleness(t *testing.T) {
 	metricSample, ok := samples[metric]
 
 	require.True(t, ok, "Series %s not returned.", metric)
-	require.True(t, value.IsStaleNaN(metricSample[2].V), "Appended second sample not as expected. Wanted: stale NaN Got: %x", math.Float64bits(metricSample[2].V))
-	metricSample[2].V = 42 // require.Equal cannot handle NaN.
+	require.True(t, value.IsStaleNaN(metricSample[2].F), "Appended second sample not as expected. Wanted: stale NaN Got: %x", math.Float64bits(metricSample[2].F))
+	metricSample[2].F = 42 // require.Equal cannot handle NaN.
 
-	want := map[string][]promql.Point{
-		metric: {{T: 0, V: 2}, {T: 1000, V: 3}, {T: 2000, V: 42}},
+	want := map[string][]promql.FPoint{
+		metric: {{T: 0, F: 2}, {T: 1000, F: 3}, {T: 2000, F: 42}},
 	}
 
 	require.Equal(t, want, samples)
 }
 
 // Convert a SeriesSet into a form usable with require.Equal.
-func readSeriesSet(ss storage.SeriesSet) (map[string][]promql.Point, error) {
-	result := map[string][]promql.Point{}
+func readSeriesSet(ss storage.SeriesSet) (map[string][]promql.FPoint, error) {
+	result := map[string][]promql.FPoint{}
+	var it chunkenc.Iterator
 
 	for ss.Next() {
 		series := ss.At()
 
-		points := []promql.Point{}
-		it := series.Iterator()
+		points := []promql.FPoint{}
+		it := series.Iterator(it)
 		for it.Next() == chunkenc.ValFloat {
 			t, v := it.At()
-			points = append(points, promql.Point{T: t, V: v})
+			points = append(points, promql.FPoint{T: t, F: v})
 		}
 
 		name := series.Labels().String()
@@ -612,13 +607,13 @@ func readSeriesSet(ss storage.SeriesSet) (map[string][]promql.Point, error) {
 func TestCopyState(t *testing.T) {
 	oldGroup := &Group{
 		rules: []Rule{
-			NewAlertingRule("alert", nil, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+			NewAlertingRule("alert", nil, 0, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
 			NewRecordingRule("rule1", nil, labels.EmptyLabels()),
 			NewRecordingRule("rule2", nil, labels.EmptyLabels()),
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v1")),
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v2")),
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v3")),
-			NewAlertingRule("alert2", nil, 0, labels.FromStrings("l2", "v1"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+			NewAlertingRule("alert2", nil, 0, 0, labels.FromStrings("l2", "v1"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
 		},
 		seriesInPreviousEval: []map[string]labels.Labels{
 			{},
@@ -637,10 +632,10 @@ func TestCopyState(t *testing.T) {
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v0")),
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v1")),
 			NewRecordingRule("rule3", nil, labels.FromStrings("l1", "v2")),
-			NewAlertingRule("alert", nil, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+			NewAlertingRule("alert", nil, 0, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
 			NewRecordingRule("rule1", nil, labels.EmptyLabels()),
-			NewAlertingRule("alert2", nil, 0, labels.FromStrings("l2", "v0"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
-			NewAlertingRule("alert2", nil, 0, labels.FromStrings("l2", "v1"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+			NewAlertingRule("alert2", nil, 0, 0, labels.FromStrings("l2", "v0"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+			NewAlertingRule("alert2", nil, 0, 0, labels.FromStrings("l2", "v1"), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
 			NewRecordingRule("rule4", nil, labels.EmptyLabels()),
 		},
 		seriesInPreviousEval: make([]map[string]labels.Labels, 8),
@@ -701,7 +696,7 @@ func TestDeletedRuleMarkedStale(t *testing.T) {
 	metricSample, ok := samples[metric]
 
 	require.True(t, ok, "Series %s not returned.", metric)
-	require.True(t, value.IsStaleNaN(metricSample[0].V), "Appended sample not as expected. Wanted: stale NaN Got: %x", math.Float64bits(metricSample[0].V))
+	require.True(t, value.IsStaleNaN(metricSample[0].F), "Appended sample not as expected. Wanted: stale NaN Got: %x", math.Float64bits(metricSample[0].F))
 }
 
 func TestUpdate(t *testing.T) {
@@ -773,13 +768,13 @@ func TestUpdate(t *testing.T) {
 			rgs.Groups[i].Interval = model.Duration(10)
 		}
 	}
-	reloadAndValidate(rgs, t, tmpFile, ruleManager, expected, ogs)
+	reloadAndValidate(rgs, t, tmpFile, ruleManager, ogs)
 
 	// Update limit and reload.
 	for i := range rgs.Groups {
 		rgs.Groups[i].Limit = 1
 	}
-	reloadAndValidate(rgs, t, tmpFile, ruleManager, expected, ogs)
+	reloadAndValidate(rgs, t, tmpFile, ruleManager, ogs)
 
 	// Change group rules and reload.
 	for i, g := range rgs.Groups {
@@ -787,7 +782,7 @@ func TestUpdate(t *testing.T) {
 			rgs.Groups[i].Rules[j].Expr.SetString(fmt.Sprintf("%s * 0", r.Expr.Value))
 		}
 	}
-	reloadAndValidate(rgs, t, tmpFile, ruleManager, expected, ogs)
+	reloadAndValidate(rgs, t, tmpFile, ruleManager, ogs)
 }
 
 // ruleGroupsTest for running tests over rules.
@@ -830,7 +825,7 @@ func formatRules(r *rulefmt.RuleGroups) ruleGroupsTest {
 	}
 }
 
-func reloadAndValidate(rgs *rulefmt.RuleGroups, t *testing.T, tmpFile *os.File, ruleManager *Manager, expected map[string]labels.Labels, ogs map[string]*Group) {
+func reloadAndValidate(rgs *rulefmt.RuleGroups, t *testing.T, tmpFile *os.File, ruleManager *Manager, ogs map[string]*Group) {
 	bs, err := yaml.Marshal(formatRules(rgs))
 	require.NoError(t, err)
 	tmpFile.Seek(0, 0)
@@ -872,7 +867,7 @@ func TestNotify(t *testing.T) {
 
 	expr, err := parser.ParseExpr("a > 1")
 	require.NoError(t, err)
-	rule := NewAlertingRule("aTooHigh", expr, 0, labels.Labels{}, labels.Labels{}, labels.EmptyLabels(), "", true, log.NewNopLogger())
+	rule := NewAlertingRule("aTooHigh", expr, 0, 0, labels.Labels{}, labels.Labels{}, labels.EmptyLabels(), "", true, log.NewNopLogger())
 	group := NewGroup(GroupOptions{
 		Name:          "alert",
 		Interval:      time.Second,
@@ -1128,7 +1123,7 @@ func countStaleNaN(t *testing.T, st storage.Storage) int {
 
 	require.True(t, ok, "Series %s not returned.", metric)
 	for _, s := range metricSample {
-		if value.IsStaleNaN(s.V) {
+		if value.IsStaleNaN(s.F) {
 			c++
 		}
 	}
@@ -1144,7 +1139,7 @@ func TestGroupHasAlertingRules(t *testing.T) {
 			group: &Group{
 				name: "HasAlertingRule",
 				rules: []Rule{
-					NewAlertingRule("alert", nil, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
+					NewAlertingRule("alert", nil, 0, 0, labels.EmptyLabels(), labels.EmptyLabels(), labels.EmptyLabels(), "", true, nil),
 					NewRecordingRule("record", nil, labels.EmptyLabels()),
 				},
 			},
@@ -1231,51 +1226,60 @@ func TestRuleHealthUpdates(t *testing.T) {
 	require.Equal(t, HealthBad, rules.Health())
 }
 
-func TestUpdateMissedEvalMetrics(t *testing.T) {
-	suite, err := promql.NewTest(t, `
+func TestRuleGroupEvalIterationFunc(t *testing.T) {
+	storage := promql.LoadedStorage(t, `
 		load 5m
 		http_requests{instance="0"}	75  85 50 0 0 25 0 0 40 0 120
 	`)
-
-	require.NoError(t, err)
-	defer suite.Close()
-
-	err = suite.Run()
-	require.NoError(t, err)
+	t.Cleanup(func() { storage.Close() })
 
 	expr, err := parser.ParseExpr(`http_requests{group="canary", job="app-server"} < 100`)
 	require.NoError(t, err)
 
 	testValue := 1
 
-	overrideFunc := func(g *Group, lastEvalTimestamp time.Time, log log.Logger) error {
+	evalIterationFunc := func(ctx context.Context, g *Group, evalTimestamp time.Time) {
 		testValue = 2
-		return nil
+		DefaultEvalIterationFunc(ctx, g, evalTimestamp)
+		testValue = 3
+	}
+
+	skipEvalIterationFunc := func(ctx context.Context, g *Group, evalTimestamp time.Time) {
+		testValue = 4
 	}
 
 	type testInput struct {
-		overrideFunc  func(g *Group, lastEvalTimestamp time.Time, logger log.Logger) error
-		expectedValue int
+		evalIterationFunc       GroupEvalIterationFunc
+		expectedValue           int
+		lastEvalTimestampIsZero bool
 	}
 
 	tests := []testInput{
-		// testValue should still have value of 1 since overrideFunc is nil.
+		// testValue should still have value of 1 since the default iteration function will be called.
 		{
-			overrideFunc:  nil,
-			expectedValue: 1,
+			evalIterationFunc:       nil,
+			expectedValue:           1,
+			lastEvalTimestampIsZero: false,
 		},
-		// testValue should be incremented to 2 since overrideFunc is called.
+		// testValue should be incremented to 3 since evalIterationFunc is called.
 		{
-			overrideFunc:  overrideFunc,
-			expectedValue: 2,
+			evalIterationFunc:       evalIterationFunc,
+			expectedValue:           3,
+			lastEvalTimestampIsZero: false,
+		},
+		// testValue should be incremented to 4 since skipEvalIterationFunc is called.
+		{
+			evalIterationFunc:       skipEvalIterationFunc,
+			expectedValue:           4,
+			lastEvalTimestampIsZero: true,
 		},
 	}
 
 	testFunc := func(tst testInput) {
 		opts := &ManagerOptions{
-			QueryFunc:       EngineQueryFunc(suite.QueryEngine(), suite.Storage()),
-			Appendable:      suite.Storage(),
-			Queryable:       suite.Storage(),
+			QueryFunc:       EngineQueryFunc(testEngine, storage),
+			Appendable:      storage,
+			Queryable:       storage,
 			Context:         context.Background(),
 			Logger:          log.NewNopLogger(),
 			NotifyFunc:      func(ctx context.Context, expr string, alerts ...*Alert) {},
@@ -1309,12 +1313,12 @@ func TestUpdateMissedEvalMetrics(t *testing.T) {
 		}
 
 		group := NewGroup(GroupOptions{
-			Name:                     "default",
-			Interval:                 time.Second,
-			Rules:                    []Rule{rule},
-			ShouldRestore:            true,
-			Opts:                     opts,
-			RuleGroupPostProcessFunc: tst.overrideFunc,
+			Name:              "default",
+			Interval:          time.Second,
+			Rules:             []Rule{rule},
+			ShouldRestore:     true,
+			Opts:              opts,
+			EvalIterationFunc: tst.evalIterationFunc,
 		})
 
 		go func() {
@@ -1323,10 +1327,78 @@ func TestUpdateMissedEvalMetrics(t *testing.T) {
 
 		time.Sleep(3 * time.Second)
 		group.stop()
+
 		require.Equal(t, tst.expectedValue, testValue)
+		if tst.lastEvalTimestampIsZero {
+			require.Zero(t, group.GetLastEvalTimestamp())
+		} else {
+			oneMinute, _ := time.ParseDuration("1m")
+			require.WithinDuration(t, time.Now(), group.GetLastEvalTimestamp(), oneMinute)
+		}
 	}
 
-	for _, tst := range tests {
+	for i, tst := range tests {
+		t.Logf("case %d", i)
 		testFunc(tst)
 	}
+}
+
+func TestNativeHistogramsInRecordingRules(t *testing.T) {
+	storage := teststorage.New(t)
+	t.Cleanup(func() { storage.Close() })
+
+	// Add some histograms.
+	db := storage.DB
+	hists := tsdbutil.GenerateTestHistograms(5)
+	ts := time.Now()
+	app := db.Appender(context.Background())
+	for i, h := range hists {
+		l := labels.FromStrings("__name__", "histogram_metric", "idx", fmt.Sprintf("%d", i))
+		_, err := app.AppendHistogram(0, l, ts.UnixMilli(), h.Copy(), nil)
+		require.NoError(t, err)
+	}
+	require.NoError(t, app.Commit())
+
+	opts := &ManagerOptions{
+		QueryFunc:  EngineQueryFunc(testEngine, storage),
+		Appendable: storage,
+		Queryable:  storage,
+		Context:    context.Background(),
+		Logger:     log.NewNopLogger(),
+	}
+
+	expr, err := parser.ParseExpr("sum(histogram_metric)")
+	require.NoError(t, err)
+	rule := NewRecordingRule("sum:histogram_metric", expr, labels.Labels{})
+
+	group := NewGroup(GroupOptions{
+		Name:          "default",
+		Interval:      time.Hour,
+		Rules:         []Rule{rule},
+		ShouldRestore: true,
+		Opts:          opts,
+	})
+
+	group.Eval(context.Background(), ts.Add(10*time.Second))
+
+	q, err := db.Querier(context.Background(), ts.UnixMilli(), ts.Add(20*time.Second).UnixMilli())
+	require.NoError(t, err)
+	ss := q.Select(false, nil, labels.MustNewMatcher(labels.MatchEqual, "__name__", "sum:histogram_metric"))
+	require.True(t, ss.Next())
+	s := ss.At()
+	require.False(t, ss.Next())
+
+	require.Equal(t, labels.FromStrings("__name__", "sum:histogram_metric"), s.Labels())
+
+	expHist := hists[0].ToFloat()
+	for _, h := range hists[1:] {
+		expHist = expHist.Add(h.ToFloat())
+	}
+
+	it := s.Iterator(nil)
+	require.Equal(t, chunkenc.ValFloatHistogram, it.Next())
+	tsp, fh := it.AtFloatHistogram()
+	require.Equal(t, ts.Add(10*time.Second).UnixMilli(), tsp)
+	require.Equal(t, expHist, fh)
+	require.Equal(t, chunkenc.ValNone, it.Next())
 }

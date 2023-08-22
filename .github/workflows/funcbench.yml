@@ -1,7 +1,10 @@
-on:  # yamllint disable-line rule:truthy
+on:
   repository_dispatch:
     types: [funcbench_start]
 name: Funcbench Workflow
+permissions:
+  contents: read
+
 jobs:
   run_funcbench:
     name: Running funcbench

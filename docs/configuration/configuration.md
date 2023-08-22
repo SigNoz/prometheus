@@ -73,9 +73,51 @@ global:
   # Reloading the configuration will reopen the file.
   [ query_log_file: <string> ]
 
+  # An uncompressed response body larger than this many bytes will cause the
+  # scrape to fail. 0 means no limit. Example: 100MB.
+  # This is an experimental feature, this behaviour could
+  # change or be removed in the future.
+  [ body_size_limit: <size> | default = 0 ]
+
+  # Per-scrape limit on number of scraped samples that will be accepted.
+  # If more than this number of samples are present after metric relabeling
+  # the entire scrape will be treated as failed. 0 means no limit.
+  [ sample_limit: <int> | default = 0 ]
+
+  # Per-scrape limit on number of labels that will be accepted for a sample. If
+  # more than this number of labels are present post metric-relabeling, the
+  # entire scrape will be treated as failed. 0 means no limit.
+  [ label_limit: <int> | default = 0 ]
+
+  # Per-scrape limit on length of labels name that will be accepted for a sample.
+  # If a label name is longer than this number post metric-relabeling, the entire
+  # scrape will be treated as failed. 0 means no limit.
+  [ label_name_length_limit: <int> | default = 0 ]
+
+  # Per-scrape limit on length of labels value that will be accepted for a sample.
+  # If a label value is longer than this number post metric-relabeling, the
+  # entire scrape will be treated as failed. 0 means no limit.
+  [ label_value_length_limit: <int> | default = 0 ]
+
+  # Per-scrape config limit on number of unique targets that will be
+  # accepted. If more than this number of targets are present after target
+  # relabeling, Prometheus will mark the targets as failed without scraping them.
+  # 0 means no limit. This is an experimental feature, this behaviour could
+  # change in the future.
+  [ target_limit: <int> | default = 0 ]
+
+  # Limit per scrape config on the number of targets dropped by relabeling
+  # that will be kept in memory. 0 means no limit.
+  [ keep_dropped_targets: <int> | default = 0 ]
+
 # Rule files specifies a list of globs. Rules and alerts are read from
 # all matching files.
 rule_files:
+  [ - <filepath_glob> ... ]
+
+# Scrape config files specifies a list of globs. Scrape configs are read from
+# all matching files and appended to the list of scrape configs.
+scrape_config_files:
   [ - <filepath_glob> ... ]
 
 # A list of scrape configurations.
@@ -128,6 +170,10 @@ job_name: <job_name>
 
 # Per-scrape timeout when scraping this job.
 [ scrape_timeout: <duration> | default = <global_config.scrape_timeout> ]
+
+# Whether to scrape a classic histogram that is also exposed as a native
+# histogram (has no effect without --enable-feature=native-histograms).
+[ scrape_classic_histograms: <boolean> | default = false ]
 
 # The HTTP resource path on which to fetch metrics from targets.
 [ metrics_path: <path> | default = /metrics ]
@@ -200,7 +246,7 @@ oauth2:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # Configures the scrape request's TLS settings.
 tls_config:
@@ -208,8 +254,14 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 
@@ -339,6 +391,7 @@ metric_relabel_configs:
 # This is an experimental feature, this behaviour could
 # change or be removed in the future.
 [ body_size_limit: <size> | default = 0 ]
+
 # Per-scrape limit on number of scraped samples that will be accepted.
 # If more than this number of samples are present after metric relabeling
 # the entire scrape will be treated as failed. 0 means no limit.
@@ -365,6 +418,15 @@ metric_relabel_configs:
 # 0 means no limit. This is an experimental feature, this behaviour could
 # change in the future.
 [ target_limit: <int> | default = 0 ]
+
+# Per-job limit on the number of targets dropped by relabeling
+# that will be kept in memory. 0 means no limit.
+[ keep_dropped_targets: <int> | default = 0 ]
+
+# Limit on total number of positive and negative buckets allowed in a single
+# native histogram. If this is exceeded, the entire scrape will be treated as
+# failed. 0 means no limit.
+[ native_histogram_bucket_limit: <int> | default = 0 ]
 ```
 
 Where `<job_name>` must be unique across all scrape configurations.
@@ -374,11 +436,16 @@ Where `<job_name>` must be unique across all scrape configurations.
 A `tls_config` allows configuring TLS connections.
 
 ```yaml
-# CA certificate to validate API server certificate with.
+# CA certificate to validate API server certificate with. At most one of ca and ca_file is allowed.
+[ ca: <string> ]
 [ ca_file: <filename> ]
 
-# Certificate and key files for client cert authentication to the server.
+# Certificate and key for client cert authentication to the server.
+# At most one of cert and cert_file is allowed.
+# At most one of key and key_file is allowed.
+[ cert: <string> ]
 [ cert_file: <filename> ]
+[ key: <secret> ]
 [ key_file: <filename> ]
 
 # ServerName extension to indicate the name of the server.
@@ -431,8 +498,14 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 ```
 
@@ -452,6 +525,7 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_azure_machine_resource_group`: the machine's resource group
 * `__meta_azure_machine_tag_<tagname>`: each tag value of the machine
 * `__meta_azure_machine_scale_set`: the name of the scale set which the vm is part of (this value is only set if you are using a [scale set](https://docs.microsoft.com/en-us/azure/virtual-machine-scale-sets/))
+* `__meta_azure_machine_size`: the machine size
 * `__meta_azure_subscription_id`: the subscription ID
 * `__meta_azure_tenant_id`: the tenant ID
 
@@ -512,15 +586,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -552,6 +632,8 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # The information to access the Consul API. It is to be defined
 # as the Consul documentation requires.
 [ server: <host> | default = "localhost:8500" ]
+# Prefix for URIs for when consul is behind an API gateway (reverse proxy).
+[ path_prefix: <string> ]
 [ token: <secret> ]
 [ datacenter: <string> ]
 # Namespaces are only supported in Consul Enterprise.
@@ -617,15 +699,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -698,15 +786,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -750,8 +844,14 @@ host: <string>
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # TLS configuration.
@@ -807,7 +907,7 @@ oauth2:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 ```
 
@@ -919,8 +1019,14 @@ host: <string>
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # TLS configuration.
@@ -978,7 +1084,7 @@ oauth2:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 ```
 
@@ -1120,15 +1226,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -1172,6 +1284,7 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_openstack_address_pool`: the pool of the private IP.
 * `__meta_openstack_instance_flavor`: the flavor of the OpenStack instance.
 * `__meta_openstack_instance_id`: the OpenStack instance ID.
+* `__meta_openstack_instance_image`: the ID of the image the OpenStack instance is using.
 * `__meta_openstack_instance_name`: the OpenStack instance name.
 * `__meta_openstack_instance_status`: the status of the OpenStack instance.
 * `__meta_openstack_private_ip`: the private IP of the OpenStack instance.
@@ -1389,15 +1502,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 ```
 
 See [this example Prometheus configuration file](/documentation/examples/prometheus-puppetdb.yml)
@@ -1600,15 +1719,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -1688,15 +1813,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -1765,15 +1896,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -1855,6 +1992,7 @@ Available meta labels:
 * `__meta_kubernetes_pod_annotationpresent_<annotationname>`: `true` for each annotation from the pod object.
 * `__meta_kubernetes_pod_container_init`: `true` if the container is an [InitContainer](https://kubernetes.io/docs/concepts/workloads/pods/init-containers/)
 * `__meta_kubernetes_pod_container_name`: Name of the container the target address points to.
+* `__meta_kubernetes_pod_container_id`: ID of the container the target address points to. The ID is in the form `<type>://<container_id>`.
 * `__meta_kubernetes_pod_container_image`: The image the container is using.
 * `__meta_kubernetes_pod_container_port_name`: Name of the container port.
 * `__meta_kubernetes_pod_container_port_number`: Number of the container port.
@@ -1880,6 +2018,8 @@ Available meta labels:
 * `__meta_kubernetes_endpoints_name`: The names of the endpoints object.
 * `__meta_kubernetes_endpoints_label_<labelname>`: Each label from the endpoints object.
 * `__meta_kubernetes_endpoints_labelpresent_<labelname>`: `true` for each label from the endpoints object.
+* `__meta_kubernetes_endpoints_annotation_<annotationname>`: Each annotation from the endpoints object.
+* `__meta_kubernetes_endpoints_annotationpresent_<annotationname>`: `true` for each annotation from the endpoints object.
 * For all targets discovered directly from the endpoints list (those not additionally inferred
   from underlying pods), the following labels are attached:
   * `__meta_kubernetes_endpoint_hostname`: Hostname of the endpoint.
@@ -1902,12 +2042,18 @@ Available meta labels:
 
 * `__meta_kubernetes_namespace`: The namespace of the endpoints object.
 * `__meta_kubernetes_endpointslice_name`: The name of endpointslice object.
+* `__meta_kubernetes_endpointslice_label_<labelname>`: Each label from the endpointslice object.
+* `__meta_kubernetes_endpointslice_labelpresent_<labelname>`: `true` for each label from the endpointslice object.
+* `__meta_kubernetes_endpointslice_annotation_<annotationname>`: Each annotation from the endpointslice object.
+* `__meta_kubernetes_endpointslice_annotationpresent_<annotationname>`: `true` for each annotation from the endpointslice object.
 * For all targets discovered directly from the endpointslice list (those not additionally inferred
   from underlying pods), the following labels are attached:
   * `__meta_kubernetes_endpointslice_address_target_kind`: Kind of the referenced object.
   * `__meta_kubernetes_endpointslice_address_target_name`: Name of referenced object.
   * `__meta_kubernetes_endpointslice_address_type`: The ip protocol family of the address of the target.
   * `__meta_kubernetes_endpointslice_endpoint_conditions_ready`:  Set to `true` or `false` for the referenced endpoint's ready state.
+  * `__meta_kubernetes_endpointslice_endpoint_conditions_serving`:  Set to `true` or `false` for the referenced endpoint's serving state.
+  * `__meta_kubernetes_endpointslice_endpoint_conditions_terminating`:  Set to `true` or `false` for the referenced endpoint's terminating state.
   * `__meta_kubernetes_endpointslice_endpoint_topology_kubernetes_io_hostname`:  Name of the node hosting the referenced endpoint.
   * `__meta_kubernetes_endpointslice_endpoint_topology_present_kubernetes_io_hostname`: Flag that shows if the referenced object has a kubernetes.io/hostname annotation.
   * `__meta_kubernetes_endpointslice_port`: Port of the referenced endpoint.
@@ -1981,15 +2127,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -2029,7 +2181,7 @@ attach_metadata:
 See [this example Prometheus configuration file](/documentation/examples/prometheus-kubernetes.yml)
 for a detailed example of configuring Prometheus for Kubernetes.
 
-You may wish to check out the 3rd party [Prometheus Operator](https://github.com/coreos/prometheus-operator),
+You may wish to check out the 3rd party [Prometheus Operator](https://github.com/prometheus-operator/prometheus-operator),
 which automates the Prometheus setup on top of Kubernetes.
 
 ### `<kuma_sd_config>`
@@ -2061,8 +2213,14 @@ server: <string>
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # TLS configuration.
@@ -2100,7 +2258,7 @@ oauth2:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 ```
 
 The [relabeling phase](#relabel_config) is the preferred and more powerful way
@@ -2182,15 +2340,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -2257,15 +2421,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -2351,7 +2521,7 @@ oauth2:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration for connecting to marathon servers
 tls_config:
@@ -2359,8 +2529,14 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 ```
 
@@ -2417,7 +2593,6 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # The information to access the Nomad API. It is to be defined
 # as the Nomad documentation requires.
 [ allow_stale: <boolean> | default = true ]
-[ datacenter: <string> ]
 [ namespace: <string> | default = default ]
 [ refresh_interval: <duration> | default = 60s ]
 [ region: <string> | default = global ]
@@ -2452,15 +2627,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -2632,15 +2813,21 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # Refresh interval to re-read the app instance list.
 [ refresh_interval: <duration> | default = 30s ]
@@ -2747,12 +2934,18 @@ tags_filter:
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # TLS configuration.
@@ -2821,15 +3014,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -2897,15 +3096,21 @@ oauth2:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # TLS configuration.
 tls_config:
@@ -3093,15 +3298,21 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # List of Azure service discovery configurations.
 azure_sd_configs:
@@ -3276,7 +3487,7 @@ authorization:
   [ credentials_file: <filename> ]
 
 # Optionally configures AWS's Signature Verification 4 signing process to
-# sign requests. Cannot be set at the same time as basic_auth, authorization, or oauth2.
+# sign requests. Cannot be set at the same time as basic_auth, authorization, oauth2, or azuread.
 # To use the default credentials from the AWS SDK, use `sigv4: {}`.
 sigv4:
   # The AWS region. If blank, the region from the default credentials chain
@@ -3295,9 +3506,19 @@ sigv4:
   [ role_arn: <string> ]
 
 # Optional OAuth 2.0 configuration.
-# Cannot be used at the same time as basic_auth, authorization, or sigv4.
+# Cannot be used at the same time as basic_auth, authorization, sigv4, or azuread.
 oauth2:
   [ <oauth2> ]
+
+# Optional AzureAD configuration.
+# Cannot be used at the same time as basic_auth, authorization, oauth2, or sigv4.
+azuread:
+  # The Azure Cloud. Options are 'AzurePublic', 'AzureChina', or 'AzureGovernment'.
+  [ cloud: <string> | default = AzurePublic ]
+
+  # Azure User-assigned Managed identity.
+  [ managed_identity:
+      [ client_id: <string> ]  
 
 # Configures the remote write request's TLS settings.
 tls_config:
@@ -3305,15 +3526,21 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # Configures the queue used to write to remote storage.
 queue_config:
@@ -3412,15 +3639,21 @@ tls_config:
 
 # Optional proxy URL.
 [ proxy_url: <string> ]
+# Comma-separated string that can contain IPs, CIDR notation, domain names
+# that should be excluded from proxying. IP and domain names can
+# contain port numbers.
+[ no_proxy: <string> ]
+# Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
+[ proxy_from_environment: <boolean> | default: false ]
 # Specifies headers to send to proxies during CONNECT requests.
-[ proxy_connect_headers:
+[ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <bool> | default: true ]
+[ enable_http2: <boolean> | default: true ]
 
 # Whether to use the external labels as selectors for the remote read endpoint.
 [ filter_external_labels: <boolean> | default = true ]

@@ -29,6 +29,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -157,6 +158,7 @@ func (m *metrics) instrumentHandlerWithPrefix(prefix string) func(handlerName st
 }
 
 func (m *metrics) instrumentHandler(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
+	m.requestCounter.WithLabelValues(handlerName, "200")
 	return promhttp.InstrumentHandlerCounter(
 		m.requestCounter.MustCurryWith(prometheus.Labels{"handler": handlerName}),
 		promhttp.InstrumentHandlerDuration(
@@ -257,6 +259,7 @@ type Options struct {
 	RemoteReadConcurrencyLimit int
 	RemoteReadBytesInFrame     int
 	EnableRemoteWriteReceiver  bool
+	EnableOTLPWriteReceiver    bool
 	IsAgent                    bool
 	AppName                    string
 
@@ -309,16 +312,17 @@ func New(logger log.Logger, o *Options) *Handler {
 	}
 	h.SetReady(false)
 
+	factorySPr := func(_ context.Context) api_v1.ScrapePoolsRetriever { return h.scrapeManager }
 	factoryTr := func(_ context.Context) api_v1.TargetRetriever { return h.scrapeManager }
 	factoryAr := func(_ context.Context) api_v1.AlertmanagerRetriever { return h.notifier }
 	FactoryRr := func(_ context.Context) api_v1.RulesRetriever { return h.ruleManager }
 
 	var app storage.Appendable
-	if o.EnableRemoteWriteReceiver {
+	if o.EnableRemoteWriteReceiver || o.EnableOTLPWriteReceiver {
 		app = h.storage
 	}
 
-	h.apiV1 = api_v1.NewAPI(h.queryEngine, h.storage, app, h.exemplarStorage, factoryTr, factoryAr,
+	h.apiV1 = api_v1.NewAPI(h.queryEngine, h.storage, app, h.exemplarStorage, factorySPr, factoryTr, factoryAr,
 		func() config.Config {
 			h.mtx.RLock()
 			defer h.mtx.RUnlock()
@@ -346,6 +350,8 @@ func New(logger log.Logger, o *Options) *Handler {
 		o.Gatherer,
 		o.Registerer,
 		nil,
+		o.EnableRemoteWriteReceiver,
+		o.EnableOTLPWriteReceiver,
 	)
 
 	if o.RoutePrefix != "/" {
@@ -400,6 +406,7 @@ func New(logger log.Logger, o *Options) *Handler {
 		replacedIdx := bytes.ReplaceAll(idx, []byte("CONSOLES_LINK_PLACEHOLDER"), []byte(h.consolesPath()))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("TITLE_PLACEHOLDER"), []byte(h.options.PageTitle))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("AGENT_MODE_PLACEHOLDER"), []byte(strconv.FormatBool(h.options.IsAgent)))
+		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("READY_PLACEHOLDER"), []byte(strconv.FormatBool(h.isReady())))
 		w.Write(replacedIdx)
 	}
 
@@ -653,13 +660,10 @@ func (h *Handler) consoles(w http.ResponseWriter, r *http.Request) {
 		params[k] = v[0]
 	}
 
-	externalLabels := map[string]string{}
 	h.mtx.RLock()
 	els := h.config.GlobalConfig.ExternalLabels
 	h.mtx.RUnlock()
-	for _, el := range els {
-		externalLabels[el.Name] = el.Value
-	}
+	externalLabels := els.Map()
 
 	// Inject some convenience variables that are easier to remember for users
 	// who are not used to Go's templating system.
@@ -711,6 +715,7 @@ func (h *Handler) runtimeInfo() (api_v1.RuntimeInfo, error) {
 		CWD:            h.cwd,
 		GoroutineCount: runtime.NumGoroutine(),
 		GOMAXPROCS:     runtime.GOMAXPROCS(0),
+		GOMEMLIMIT:     debug.SetMemoryLimit(-1),
 		GOGC:           os.Getenv("GOGC"),
 		GODEBUG:        os.Getenv("GODEBUG"),
 	}
@@ -720,9 +725,9 @@ func (h *Handler) runtimeInfo() (api_v1.RuntimeInfo, error) {
 	}
 	if h.options.TSDBMaxBytes != 0 {
 		if status.StorageRetention != "" {
-			status.StorageRetention = status.StorageRetention + " or "
+			status.StorageRetention += " or "
 		}
-		status.StorageRetention = status.StorageRetention + h.options.TSDBMaxBytes.String()
+		status.StorageRetention += h.options.TSDBMaxBytes.String()
 	}
 
 	metrics, err := h.gatherer.Gather()
@@ -743,7 +748,7 @@ func (h *Handler) runtimeInfo() (api_v1.RuntimeInfo, error) {
 }
 
 func toFloat64(f *io_prometheus_client.MetricFamily) float64 {
-	m := *f.Metric[0]
+	m := f.Metric[0]
 	if m.Gauge != nil {
 		return m.Gauge.GetValue()
 	}
@@ -756,14 +761,14 @@ func toFloat64(f *io_prometheus_client.MetricFamily) float64 {
 	return math.NaN()
 }
 
-func (h *Handler) version(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) version(w http.ResponseWriter, _ *http.Request) {
 	dec := json.NewEncoder(w)
 	if err := dec.Encode(h.versionInfo); err != nil {
 		http.Error(w, fmt.Sprintf("error encoding JSON: %s", err), http.StatusInternalServerError)
 	}
 }
 
-func (h *Handler) quit(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) quit(w http.ResponseWriter, _ *http.Request) {
 	var closed bool
 	h.quitOnce.Do(func() {
 		closed = true
@@ -775,7 +780,7 @@ func (h *Handler) quit(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) reload(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reload(w http.ResponseWriter, _ *http.Request) {
 	rc := make(chan error)
 	h.reloadCh <- rc
 	if err := <-rc; err != nil {

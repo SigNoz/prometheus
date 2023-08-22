@@ -34,7 +34,7 @@ The features that distinguish Prometheus from other metrics and monitoring syste
 
 ## Architecture overview
 
-![Architecture overview](https://cdn.jsdelivr.net/gh/prometheus/prometheus@c34257d069c630685da35bcef084632ffd5d6209/documentation/images/architecture.svg)
+![Architecture overview](documentation/images/architecture.svg)
 
 ## Install
 
@@ -137,8 +137,6 @@ promu crossbuild -p linux/amd64
 make npm_licenses
 make common-docker-amd64
 ```
-
-*NB* if you are on a Mac, you will need [gnu-tar](https://formulae.brew.sh/formula/gnu-tar).
 
 ## Using Prometheus as a Go Library
 

@@ -1,16 +1,21 @@
 name: buf.build
-on:  # yamllint disable-line rule:truthy
+on:
   pull_request:
     paths:
       - ".github/workflows/buf-lint.yml"
       - "**.proto"
+permissions:
+  contents: read
+
 jobs:
   buf:
     name: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - uses: bufbuild/buf-setup-action@v1.9.0
+      - uses: bufbuild/buf-setup-action@v1.23.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
       - uses: bufbuild/buf-lint-action@v1
         with:
           input: 'prompb'

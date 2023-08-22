@@ -28,6 +28,7 @@ func TestRelabel(t *testing.T) {
 		input   labels.Labels
 		relabel []*Config
 		output  labels.Labels
+		drop    bool
 	}{
 		{
 			input: labels.FromMap(map[string]string{
@@ -101,7 +102,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Replace,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -115,7 +116,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Drop,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -177,7 +178,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Keep,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -396,6 +397,34 @@ func TestRelabel(t *testing.T) {
 				"foo":              "bar",
 			}),
 		},
+		{ // From https://github.com/prometheus/prometheus/issues/12283
+			input: labels.FromMap(map[string]string{
+				"__meta_kubernetes_pod_container_port_name":         "foo",
+				"__meta_kubernetes_pod_annotation_XXX_metrics_port": "9091",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp("^__meta_kubernetes_pod_container_port_name$"),
+					Action: LabelDrop,
+				},
+				{
+					SourceLabels: model.LabelNames{"__meta_kubernetes_pod_annotation_XXX_metrics_port"},
+					Regex:        MustNewRegexp("(.+)"),
+					Action:       Replace,
+					Replacement:  "metrics",
+					TargetLabel:  "__meta_kubernetes_pod_container_port_name",
+				},
+				{
+					SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_name"},
+					Regex:        MustNewRegexp("^metrics$"),
+					Action:       Keep,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"__meta_kubernetes_pod_annotation_XXX_metrics_port": "9091",
+				"__meta_kubernetes_pod_container_port_name":         "metrics",
+			}),
+		},
 		{
 			input: labels.FromMap(map[string]string{
 				"a":  "foo",
@@ -483,7 +512,7 @@ func TestRelabel(t *testing.T) {
 					TargetLabel:  "__port1",
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -517,7 +546,7 @@ func TestRelabel(t *testing.T) {
 					TargetLabel:  "__port2",
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 	}
 
@@ -538,8 +567,11 @@ func TestRelabel(t *testing.T) {
 			}
 		}
 
-		res := Process(test.input, test.relabel...)
-		require.Equal(t, test.output, res)
+		res, keep := Process(test.input, test.relabel...)
+		require.Equal(t, !test.drop, keep)
+		if keep {
+			require.Equal(t, test.output, res)
+		}
 	}
 }
 
@@ -721,7 +753,7 @@ func BenchmarkRelabel(b *testing.B) {
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				_ = Process(tt.lbls, tt.cfgs...)
+				_, _ = Process(tt.lbls, tt.cfgs...)
 			}
 		})
 	}
