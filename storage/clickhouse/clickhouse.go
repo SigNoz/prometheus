@@ -38,9 +38,11 @@ import (
 )
 
 const (
-	subsystem                     = "clickhouse"
-	DISTRIBUTED_TIME_SERIES_TABLE = "distributed_time_series_v2"
-	DISTRIBUTED_SAMPLES_TABLE     = "distributed_samples_v2"
+	subsystem                   = "clickhouse"
+	distributedTimeSeriesV4     = "distributed_time_series_v4"
+	distributedTimeSeriesV46hrs = "distributed_time_series_v4_6hrs"
+	distributedTimeSeriesV41day = "distributed_time_series_v4_1day"
+	distributedSamplesV4        = "distributed_samples_v4"
 )
 
 // clickHouse implements storage interface for the ClickHouse.
@@ -62,6 +64,34 @@ type ClickHouseParams struct {
 	DropDatabase         bool
 	MaxOpenConns         int
 	MaxTimeSeriesInQuery int
+}
+
+var (
+	sixHoursInMilliseconds = time.Hour.Milliseconds() * 6
+	oneDayInMilliseconds   = time.Hour.Milliseconds() * 24
+)
+
+// start and end are in milliseconds
+func which(start, end int64) (int64, int64, string) {
+	// If time range is less than 6 hours, we need to use the `time_series_v4` table
+	// else if time range is less than 1 day and greater than 6 hours, we need to use the `time_series_v4_6hrs` table
+	// else we need to use the `time_series_v4_1day` table
+	var tableName string
+	if end-start <= sixHoursInMilliseconds {
+		// adjust the start time to nearest 1 hour
+		start = start - (start % (time.Hour.Milliseconds() * 1))
+		tableName = distributedTimeSeriesV4
+	} else if end-start <= oneDayInMilliseconds {
+		// adjust the start time to nearest 6 hours
+		start = start - (start % (time.Hour.Milliseconds() * 6))
+		tableName = distributedTimeSeriesV46hrs
+	} else {
+		// adjust the start time to nearest 1 day
+		start = start - (start % (time.Hour.Milliseconds() * 24))
+		tableName = distributedTimeSeriesV41day
+	}
+
+	return start, end, tableName
 }
 
 func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
@@ -126,14 +156,14 @@ func (ch *clickHouse) runTimeSeriesReloader(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE timestamp_ms >= $1;`
+	queryTmpl := `SELECT DISTINCT fingerprint, labels FROM %s.%s WHERE unix_milli >= $1;`
 	for {
 		timeSeries := make(map[string]map[uint64][]prompb.Label)
 		newSeriesCount := 0
 		lastLoadedTimeStamp := time.Now().Add(time.Duration(-1) * time.Minute).UnixMilli()
 
 		err := func() error {
-			query := fmt.Sprintf(queryTmpl, ch.database, DISTRIBUTED_TIME_SERIES_TABLE)
+			query := fmt.Sprintf(queryTmpl, ch.database, distributedTimeSeriesV4)
 			ch.l.Debug("Running reloader query:", query)
 			rows, err := ch.db.Query(query, ch.lastLoadedTimeStamp)
 			if err != nil {
@@ -253,10 +283,10 @@ func (ch *clickHouse) querySamples(
 	argCount := len(args)
 
 	query := fmt.Sprintf(`
-		SELECT metric_name, fingerprint, timestamp_ms, value
+		SELECT metric_name, fingerprint, unix_milli, value
 			FROM %s.%s
-			WHERE metric_name = $1 AND fingerprint GLOBAL IN (%s) AND timestamp_ms >= $%s AND timestamp_ms <= $%s ORDER BY fingerprint, timestamp_ms;`,
-		ch.database, DISTRIBUTED_SAMPLES_TABLE, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
+			WHERE metric_name = $1 AND fingerprint GLOBAL IN (%s) AND unix_milli >= $%s AND unix_milli <= $%s;`,
+		ch.database, distributedSamplesV4, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
 	query = strings.TrimSpace(query)
 
 	ch.l.Debugf("Running query : %s", query)
@@ -294,7 +324,7 @@ func (ch *clickHouse) convertReadRequest(request *prompb.Query) base.Query {
 		case prompb.LabelMatcher_NRE:
 			t = base.MatchNotRegexp
 		default:
-			ch.l.Error("convertReadRequest: unexpected matcher %d", m.Type)
+			ch.l.Errorf("convertReadRequest: unexpected matcher %d", m.Type)
 		}
 
 		q.Matchers[j] = base.Matcher{
@@ -315,13 +345,18 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	var clickHouseQuery string
 	var conditions []string
 	var argCount int = 0
-	var selectString string = "fingerprint, labels"
+	var selectString string = "fingerprint, any(labels)"
 	if subQuery {
 		argCount = 1
 		selectString = "fingerprint"
 	}
+
+	start, end, tableName := which(query.StartTimestampMs, query.EndTimestampMs)
+
 	var args []interface{}
 	conditions = append(conditions, fmt.Sprintf("metric_name = $%d", argCount+1))
+	conditions = append(conditions, "temporality IN ['Cumulative', 'Unspecified']")
+	conditions = append(conditions, fmt.Sprintf("unix_milli >= %d AND unix_milli < %d", start, end))
 	args = append(args, metricName)
 	for _, m := range query.Matchers {
 		switch m.Type {
@@ -341,7 +376,7 @@ func (ch *clickHouse) prepareClickHouseQuery(query *prompb.Query, metricName str
 	}
 	whereClause := strings.Join(conditions, " AND ")
 
-	clickHouseQuery = fmt.Sprintf(`SELECT DISTINCT %s FROM %s.%s WHERE %s`, selectString, ch.database, DISTRIBUTED_TIME_SERIES_TABLE, whereClause)
+	clickHouseQuery = fmt.Sprintf(`SELECT %s FROM %s.%s WHERE %s GROUP BY fingerprint`, selectString, ch.database, tableName, whereClause)
 
 	return clickHouseQuery, args, nil
 }
@@ -418,18 +453,16 @@ func (ch *clickHouse) Read(ctx context.Context, query *prompb.Query) (*prompb.Qu
 	}
 	ch.l.Debugf("fingerprintsForQuery took %s, num fingerprints: %d", time.Since(start), len(fingerprints))
 	subQuery, args, err := ch.prepareClickHouseQuery(query, metricName, true)
+	if err != nil {
+		return nil, err
+	}
 
 	res := new(prompb.QueryResult)
 	if len(fingerprints) == 0 {
 		return res, nil
 	}
 
-	sampleFunc := ch.querySamples
-	// if len(fingerprints) > ch.maxTimeSeriesInQuery {
-	// 	sampleFunc = ch.tempTableSamples
-	// }
-
-	ts, err := sampleFunc(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName, subQuery, args)
+	ts, err := ch.querySamples(ctx, int64(query.StartTimestampMs), int64(query.EndTimestampMs), fingerprints, metricName, subQuery, args)
 
 	if err != nil {
 		return nil, err
