@@ -248,12 +248,6 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]prom
 				Labels: labels,
 			}
 			usedFingerprintCount += 1
-			ch.l.Infof("\n")
-			ch.l.Infof("Used fingerprint: %d", fingerprint)
-			for _, item := range labels {
-				ch.l.Infof("name: %s, value: %s", item.Name, item.Value)
-			}
-			ch.l.Infof("\n")
 		}
 
 		// add samples to current time series
@@ -291,7 +285,7 @@ func (ch *clickHouse) querySamples(
 	query := fmt.Sprintf(`
 		SELECT metric_name, fingerprint, unix_milli, value
 			FROM %s.%s
-			WHERE metric_name = $1 AND fingerprint GLOBAL IN (%s) AND unix_milli >= $%s AND unix_milli <= $%s;`,
+			WHERE metric_name = $1 AND fingerprint GLOBAL IN (%s) AND unix_milli >= $%s AND unix_milli <= $%s ORDER BY fingerprint, unix_milli;`,
 		ch.database, distributedSamplesV4, subQuery, strconv.Itoa(argCount+2), strconv.Itoa(argCount+3))
 	query = strings.TrimSpace(query)
 
@@ -405,12 +399,6 @@ func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string, ar
 		}
 
 		labels, _, err := unmarshalLabels(b)
-		ch.l.Infof("\n")
-		ch.l.Infof("b: %s, fingerprint: %d\b", string(b), fingerprint)
-		for _, item := range labels {
-			ch.l.Infof("name: %s, value: %s ", item.Name, item.Value)
-		}
-		ch.l.Infof("\n")
 
 		if err != nil {
 			return nil, err
