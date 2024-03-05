@@ -248,6 +248,12 @@ func (ch *clickHouse) scanSamples(rows *sql.Rows, fingerprints map[uint64][]prom
 				Labels: labels,
 			}
 			usedFingerprintCount += 1
+			ch.l.Infof("\n")
+			ch.l.Infof("Used fingerprint: %d", fingerprint)
+			for _, item := range labels {
+				ch.l.Infof("name: %s, value: %s", item.Name, item.Value)
+			}
+			ch.l.Infof("\n")
 		}
 
 		// add samples to current time series
@@ -399,6 +405,12 @@ func (ch *clickHouse) fingerprintsForQuery(ctx context.Context, query string, ar
 		}
 
 		labels, _, err := unmarshalLabels(b)
+		ch.l.Infof("\n")
+		ch.l.Infof("b: %s, fingerprint: %d\b", string(b), fingerprint)
+		for _, item := range labels {
+			ch.l.Infof("name: %s, value: %s ", item.Name, item.Value)
+		}
+		ch.l.Infof("\n")
 
 		if err != nil {
 			return nil, err
