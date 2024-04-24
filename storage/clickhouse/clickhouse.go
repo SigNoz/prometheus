@@ -20,7 +20,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"runtime/pprof"
 	"strconv"
@@ -98,29 +97,12 @@ func which(start, end int64) (int64, int64, string) {
 func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 	l := logrus.WithField("component", "clickhouse")
 
-	dsnURL, err := url.Parse(params.DSN)
+	options, err := clickhouse.ParseDSN(params.DSN)
 	if err != nil {
 		return nil, err
 	}
-	database := dsnURL.Query().Get("database")
-	if database == "" {
-		return nil, fmt.Errorf("database should be set in ClickHouse DSN")
-	}
 
-	options := &clickhouse.Options{
-		Addr: []string{dsnURL.Host},
-	}
-	if dsnURL.Query().Get("username") != "" {
-		auth := clickhouse.Auth{
-			// Database: "",
-			Username: dsnURL.Query().Get("username"),
-			Password: dsnURL.Query().Get("password"),
-		}
-
-		options.Auth = auth
-	}
 	initDB := clickhouse.OpenDB(options)
-
 	initDB.SetConnMaxIdleTime(2)
 	initDB.SetMaxOpenConns(params.MaxOpenConns)
 	initDB.SetConnMaxLifetime(0)
@@ -137,7 +119,7 @@ func NewClickHouse(params *ClickHouseParams) (base.Storage, error) {
 	ch := &clickHouse{
 		db:                   initDB,
 		l:                    l,
-		database:             database,
+		database:             options.Auth.Database,
 		maxTimeSeriesInQuery: params.MaxTimeSeriesInQuery,
 
 		timeSeries:         make(map[string]map[uint64][]prompb.Label, 262144),
