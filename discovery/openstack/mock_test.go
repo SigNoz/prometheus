@@ -18,9 +18,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
-// SDMock is the interface for the OpenStack mock
+// SDMock is the interface for the OpenStack mock.
 type SDMock struct {
 	t      *testing.T
 	Server *httptest.Server
@@ -34,12 +36,12 @@ func NewSDMock(t *testing.T) *SDMock {
 	}
 }
 
-// Endpoint returns the URI to the mock server
+// Endpoint returns the URI to the mock server.
 func (m *SDMock) Endpoint() string {
 	return m.Server.URL + "/"
 }
 
-// Setup creates the mock server
+// Setup creates the mock server.
 func (m *SDMock) Setup() {
 	m.Mux = http.NewServeMux()
 	m.Server = httptest.NewServer(m.Mux)
@@ -49,18 +51,16 @@ func (m *SDMock) Setup() {
 const tokenID = "cbc36478b0bd8e67e89469c7749d4127"
 
 func testMethod(t *testing.T, r *http.Request, expected string) {
-	if expected != r.Method {
-		t.Errorf("Request method = %v, expected %v", r.Method, expected)
-	}
+	require.Equal(t, expected, r.Method, "Unexpected request method.")
 }
 
 func testHeader(t *testing.T, r *http.Request, header, expected string) {
-	if actual := r.Header.Get(header); expected != actual {
-		t.Errorf("Header %s = %s, expected %s", header, actual, expected)
-	}
+	t.Helper()
+	actual := r.Header.Get(header)
+	require.Equal(t, expected, actual, "Unexpected value for request header %s.", header)
 }
 
-// HandleVersionsSuccessfully mocks version call
+// HandleVersionsSuccessfully mocks version call.
 func (m *SDMock) HandleVersionsSuccessfully() {
 	m.Mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `
@@ -88,7 +88,7 @@ func (m *SDMock) HandleVersionsSuccessfully() {
 	})
 }
 
-// HandleAuthSuccessfully mocks auth call
+// HandleAuthSuccessfully mocks auth call.
 func (m *SDMock) HandleAuthSuccessfully() {
 	m.Mux.HandleFunc("/v3/auth/tokens", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("X-Subject-Token", tokenID)
@@ -236,10 +236,10 @@ const hypervisorListBody = `
     ]
 }`
 
-// HandleHypervisorListSuccessfully mocks os-hypervisors detail call
+// HandleHypervisorListSuccessfully mocks os-hypervisors detail call.
 func (m *SDMock) HandleHypervisorListSuccessfully() {
 	m.Mux.HandleFunc("/os-hypervisors/detail", func(w http.ResponseWriter, r *http.Request) {
-		testMethod(m.t, r, "GET")
+		testMethod(m.t, r, http.MethodGet)
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
@@ -533,10 +533,10 @@ const serverListBody = `
 }
 `
 
-// HandleServerListSuccessfully mocks server detail call
+// HandleServerListSuccessfully mocks server detail call.
 func (m *SDMock) HandleServerListSuccessfully() {
 	m.Mux.HandleFunc("/servers/detail", func(w http.ResponseWriter, r *http.Request) {
-		testMethod(m.t, r, "GET")
+		testMethod(m.t, r, http.MethodGet)
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
@@ -572,10 +572,10 @@ const listOutput = `
 }
 `
 
-// HandleFloatingIPListSuccessfully mocks floating ips call
+// HandleFloatingIPListSuccessfully mocks floating ips call.
 func (m *SDMock) HandleFloatingIPListSuccessfully() {
 	m.Mux.HandleFunc("/os-floating-ips", func(w http.ResponseWriter, r *http.Request) {
-		testMethod(m.t, r, "GET")
+		testMethod(m.t, r, http.MethodGet)
 		testHeader(m.t, r, "X-Auth-Token", tokenID)
 
 		w.Header().Add("Content-Type", "application/json")
