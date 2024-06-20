@@ -27,7 +27,8 @@ import (
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/prompb"
-	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/annotations"
+	"github.com/prometheus/prometheus/util/testutil"
 )
 
 func TestNoDuplicateReadConfigs(t *testing.T) {
@@ -186,7 +187,7 @@ func TestSeriesSetFilter(t *testing.T) {
 		filtered := newSeriesSetFilter(FromQueryResult(true, tc.in), tc.toRemove)
 		act, ws, err := ToQueryResult(filtered, 1e6)
 		require.NoError(t, err)
-		require.Equal(t, 0, len(ws))
+		require.Empty(t, ws)
 		require.Equal(t, tc.expected, act)
 	}
 }
@@ -194,6 +195,7 @@ func TestSeriesSetFilter(t *testing.T) {
 type mockedRemoteClient struct {
 	got   *prompb.Query
 	store []*prompb.TimeSeries
+	b     labels.ScratchBuilder
 }
 
 func (c *mockedRemoteClient) Read(_ context.Context, query *prompb.Query) (*prompb.QueryResult, error) {
@@ -209,7 +211,7 @@ func (c *mockedRemoteClient) Read(_ context.Context, query *prompb.Query) (*prom
 
 	q := &prompb.QueryResult{}
 	for _, s := range c.store {
-		l := labelProtosToLabels(s.Labels)
+		l := labelProtosToLabels(&c.b, s.Labels)
 		var notMatch bool
 
 		for _, m := range matchers {
@@ -241,6 +243,7 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 			{Labels: []prompb.Label{{Name: "a", Value: "b3"}, {Name: "region", Value: "us"}}},
 			{Labels: []prompb.Label{{Name: "a", Value: "b2"}, {Name: "region", Value: "europe"}}},
 		},
+		b: labels.NewScratchBuilder(0),
 	}
 
 	for _, tc := range []struct {
@@ -469,13 +472,13 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 				tc.readRecent,
 				tc.callback,
 			)
-			q, err := c.Querier(context.TODO(), tc.mint, tc.maxt)
+			q, err := c.Querier(tc.mint, tc.maxt)
 			require.NoError(t, err)
 			defer require.NoError(t, q.Close())
 
-			ss := q.Select(true, nil, tc.matchers...)
+			ss := q.Select(context.Background(), true, nil, tc.matchers...)
 			require.NoError(t, err)
-			require.Equal(t, storage.Warnings(nil), ss.Warnings())
+			require.Equal(t, annotations.Annotations(nil), ss.Warnings())
 
 			require.Equal(t, tc.expectedQuery, m.got)
 
@@ -484,7 +487,7 @@ func TestSampleAndChunkQueryableClient(t *testing.T) {
 				got = append(got, ss.At().Labels())
 			}
 			require.NoError(t, ss.Err())
-			require.Equal(t, tc.expectedSeries, got)
+			testutil.RequireEqual(t, tc.expectedSeries, got)
 		})
 	}
 }
