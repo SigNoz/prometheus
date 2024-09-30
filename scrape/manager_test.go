@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
@@ -36,21 +37,28 @@ import (
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
+	_ "github.com/prometheus/prometheus/discovery/file"
 	"github.com/prometheus/prometheus/discovery/targetgroup"
+	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/relabel"
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 	"github.com/prometheus/prometheus/util/runutil"
 	"github.com/prometheus/prometheus/util/testutil"
 )
 
+func init() {
+	// This can be removed when the default validation scheme in common is updated.
+	model.NameValidationScheme = model.UTF8Validation
+}
+
 func TestPopulateLabels(t *testing.T) {
 	cases := []struct {
-		in            labels.Labels
-		cfg           *config.ScrapeConfig
-		noDefaultPort bool
-		res           labels.Labels
-		resOrig       labels.Labels
-		err           string
+		in      labels.Labels
+		cfg     *config.ScrapeConfig
+		res     labels.Labels
+		resOrig labels.Labels
+		err     string
 	}{
 		// Regular population of scrape config options.
 		{
@@ -104,8 +112,8 @@ func TestPopulateLabels(t *testing.T) {
 				ScrapeTimeout:  model.Duration(time.Second),
 			},
 			res: labels.FromMap(map[string]string{
-				model.AddressLabel:        "1.2.3.4:80",
-				model.InstanceLabel:       "1.2.3.4:80",
+				model.AddressLabel:        "1.2.3.4",
+				model.InstanceLabel:       "1.2.3.4",
 				model.SchemeLabel:         "http",
 				model.MetricsPathLabel:    "/custom",
 				model.JobLabel:            "custom-job",
@@ -135,7 +143,7 @@ func TestPopulateLabels(t *testing.T) {
 				ScrapeTimeout:  model.Duration(time.Second),
 			},
 			res: labels.FromMap(map[string]string{
-				model.AddressLabel:        "[::1]:443",
+				model.AddressLabel:        "[::1]",
 				model.InstanceLabel:       "custom-instance",
 				model.SchemeLabel:         "https",
 				model.MetricsPathLabel:    "/metrics",
@@ -358,7 +366,6 @@ func TestPopulateLabels(t *testing.T) {
 				ScrapeInterval: model.Duration(time.Second),
 				ScrapeTimeout:  model.Duration(time.Second),
 			},
-			noDefaultPort: true,
 			res: labels.FromMap(map[string]string{
 				model.AddressLabel:        "1.2.3.4",
 				model.InstanceLabel:       "1.2.3.4",
@@ -377,7 +384,7 @@ func TestPopulateLabels(t *testing.T) {
 				model.ScrapeTimeoutLabel:  "1s",
 			}),
 		},
-		// Remove default port (http).
+		// verify that the default port is not removed (http).
 		{
 			in: labels.FromMap(map[string]string{
 				model.AddressLabel: "1.2.3.4:80",
@@ -389,9 +396,8 @@ func TestPopulateLabels(t *testing.T) {
 				ScrapeInterval: model.Duration(time.Second),
 				ScrapeTimeout:  model.Duration(time.Second),
 			},
-			noDefaultPort: true,
 			res: labels.FromMap(map[string]string{
-				model.AddressLabel:        "1.2.3.4",
+				model.AddressLabel:        "1.2.3.4:80",
 				model.InstanceLabel:       "1.2.3.4:80",
 				model.SchemeLabel:         "http",
 				model.MetricsPathLabel:    "/metrics",
@@ -408,7 +414,7 @@ func TestPopulateLabels(t *testing.T) {
 				model.ScrapeTimeoutLabel:  "1s",
 			}),
 		},
-		// Remove default port (https).
+		// verify that the default port is not removed (https).
 		{
 			in: labels.FromMap(map[string]string{
 				model.AddressLabel: "1.2.3.4:443",
@@ -420,9 +426,8 @@ func TestPopulateLabels(t *testing.T) {
 				ScrapeInterval: model.Duration(time.Second),
 				ScrapeTimeout:  model.Duration(time.Second),
 			},
-			noDefaultPort: true,
 			res: labels.FromMap(map[string]string{
-				model.AddressLabel:        "1.2.3.4",
+				model.AddressLabel:        "1.2.3.4:443",
 				model.InstanceLabel:       "1.2.3.4:443",
 				model.SchemeLabel:         "https",
 				model.MetricsPathLabel:    "/metrics",
@@ -443,7 +448,7 @@ func TestPopulateLabels(t *testing.T) {
 	for _, c := range cases {
 		in := c.in.Copy()
 
-		res, orig, err := PopulateLabels(labels.NewBuilder(c.in), c.cfg, c.noDefaultPort)
+		res, orig, err := PopulateLabels(labels.NewBuilder(c.in), c.cfg)
 		if c.err != "" {
 			require.EqualError(t, err, c.err)
 		} else {
@@ -509,7 +514,7 @@ scrape_configs:
 	)
 
 	opts := Options{}
-	scrapeManager, err := NewManager(&opts, nil, nil, testRegistry)
+	scrapeManager, err := NewManager(&opts, nil, nil, nil, testRegistry)
 	require.NoError(t, err)
 	newLoop := func(scrapeLoopOptions) loop {
 		ch <- struct{}{}
@@ -574,7 +579,7 @@ scrape_configs:
 func TestManagerTargetsUpdates(t *testing.T) {
 	opts := Options{}
 	testRegistry := prometheus.NewRegistry()
-	m, err := NewManager(&opts, nil, nil, testRegistry)
+	m, err := NewManager(&opts, nil, nil, nil, testRegistry)
 	require.NoError(t, err)
 
 	ts := make(chan map[string][]*targetgroup.Group)
@@ -627,7 +632,7 @@ global:
 
 	opts := Options{}
 	testRegistry := prometheus.NewRegistry()
-	scrapeManager, err := NewManager(&opts, nil, nil, testRegistry)
+	scrapeManager, err := NewManager(&opts, nil, nil, nil, testRegistry)
 	require.NoError(t, err)
 
 	// Load the first config.
@@ -704,7 +709,7 @@ scrape_configs:
 	}
 
 	opts := Options{}
-	scrapeManager, err := NewManager(&opts, nil, nil, testRegistry)
+	scrapeManager, err := NewManager(&opts, nil, nil, nil, testRegistry)
 	require.NoError(t, err)
 
 	reload(scrapeManager, cfg1)
@@ -722,8 +727,6 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 		name                  string
 		counterSample         *dto.Counter
 		enableCTZeroIngestion bool
-
-		expectedValues []float64
 	}{
 		{
 			name: "disabled with CT on counter",
@@ -732,7 +735,6 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 				// Timestamp does not matter as long as it exists in this test.
 				CreatedTimestamp: timestamppb.Now(),
 			},
-			expectedValues: []float64{1.0},
 		},
 		{
 			name: "enabled with CT on counter",
@@ -742,7 +744,6 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 				CreatedTimestamp: timestamppb.Now(),
 			},
 			enableCTZeroIngestion: true,
-			expectedValues:        []float64{0.0, 1.0},
 		},
 		{
 			name: "enabled without CT on counter",
@@ -750,7 +751,6 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 				Value: proto.Float64(1.0),
 			},
 			enableCTZeroIngestion: true,
-			expectedValues:        []float64{1.0},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -761,6 +761,7 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 					skipOffsetting:                      true,
 				},
 				log.NewLogfmtLogger(os.Stderr),
+				nil,
 				&collectResultAppendable{app},
 				prometheus.NewRegistry(),
 			)
@@ -817,44 +818,214 @@ func TestManagerCTZeroIngestion(t *testing.T) {
 			})
 			scrapeManager.reload()
 
+			var got []float64
 			// Wait for one scrape.
 			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer cancel()
 			require.NoError(t, runutil.Retry(100*time.Millisecond, ctx.Done(), func() error {
-				if countFloatSamples(app, mName) != len(tc.expectedValues) {
-					return fmt.Errorf("expected %v samples", tc.expectedValues)
+				app.mtx.Lock()
+				defer app.mtx.Unlock()
+
+				// Check if scrape happened and grab the relevant samples, they have to be there - or it's a bug
+				// and it's not worth waiting.
+				for _, f := range app.resultFloats {
+					if f.metric.Get(model.MetricNameLabel) == mName {
+						got = append(got, f.f)
+					}
 				}
-				return nil
+				if len(app.resultFloats) > 0 {
+					return nil
+				}
+				return fmt.Errorf("expected some samples, got none")
 			}), "after 1 minute")
 			scrapeManager.Stop()
 
-			require.Equal(t, tc.expectedValues, getResultFloats(app, mName))
+			// Check for zero samples, assuming we only injected always one sample.
+			// Did it contain CT to inject? If yes, was CT zero enabled?
+			if tc.counterSample.CreatedTimestamp.IsValid() && tc.enableCTZeroIngestion {
+				require.Len(t, got, 2)
+				require.Equal(t, 0.0, got[0])
+				require.Equal(t, tc.counterSample.GetValue(), got[1])
+				return
+			}
+
+			// Expect only one, valid sample.
+			require.Len(t, got, 1)
+			require.Equal(t, tc.counterSample.GetValue(), got[0])
 		})
 	}
 }
 
-func countFloatSamples(a *collectResultAppender, expectedMetricName string) (count int) {
-	a.mtx.Lock()
-	defer a.mtx.Unlock()
-
-	for _, f := range a.resultFloats {
-		if f.metric.Get(model.MetricNameLabel) == expectedMetricName {
-			count++
+// generateTestHistogram generates the same thing as tsdbutil.GenerateTestHistogram,
+// but in the form of dto.Histogram.
+func generateTestHistogram(i int) *dto.Histogram {
+	helper := tsdbutil.GenerateTestHistogram(i)
+	h := &dto.Histogram{}
+	h.SampleCount = proto.Uint64(helper.Count)
+	h.SampleSum = proto.Float64(helper.Sum)
+	h.Schema = proto.Int32(helper.Schema)
+	h.ZeroThreshold = proto.Float64(helper.ZeroThreshold)
+	h.ZeroCount = proto.Uint64(helper.ZeroCount)
+	h.PositiveSpan = make([]*dto.BucketSpan, len(helper.PositiveSpans))
+	for i, span := range helper.PositiveSpans {
+		h.PositiveSpan[i] = &dto.BucketSpan{
+			Offset: proto.Int32(span.Offset),
+			Length: proto.Uint32(span.Length),
 		}
 	}
-	return count
+	h.PositiveDelta = helper.PositiveBuckets
+	h.NegativeSpan = make([]*dto.BucketSpan, len(helper.NegativeSpans))
+	for i, span := range helper.NegativeSpans {
+		h.NegativeSpan[i] = &dto.BucketSpan{
+			Offset: proto.Int32(span.Offset),
+			Length: proto.Uint32(span.Length),
+		}
+	}
+	h.NegativeDelta = helper.NegativeBuckets
+	return h
 }
 
-func getResultFloats(app *collectResultAppender, expectedMetricName string) (result []float64) {
-	app.mtx.Lock()
-	defer app.mtx.Unlock()
+func TestManagerCTZeroIngestionHistogram(t *testing.T) {
+	const mName = "expected_histogram"
 
-	for _, f := range app.resultFloats {
-		if f.metric.Get(model.MetricNameLabel) == expectedMetricName {
-			result = append(result, f.f)
-		}
+	for _, tc := range []struct {
+		name                  string
+		inputHistSample       *dto.Histogram
+		enableCTZeroIngestion bool
+	}{
+		{
+			name: "disabled with CT on histogram",
+			inputHistSample: func() *dto.Histogram {
+				h := generateTestHistogram(0)
+				h.CreatedTimestamp = timestamppb.Now()
+				return h
+			}(),
+			enableCTZeroIngestion: false,
+		},
+		{
+			name: "enabled with CT on histogram",
+			inputHistSample: func() *dto.Histogram {
+				h := generateTestHistogram(0)
+				h.CreatedTimestamp = timestamppb.Now()
+				return h
+			}(),
+			enableCTZeroIngestion: true,
+		},
+		{
+			name: "enabled without CT on histogram",
+			inputHistSample: func() *dto.Histogram {
+				h := generateTestHistogram(0)
+				return h
+			}(),
+			enableCTZeroIngestion: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &collectResultAppender{}
+			scrapeManager, err := NewManager(
+				&Options{
+					EnableCreatedTimestampZeroIngestion: tc.enableCTZeroIngestion,
+					EnableNativeHistogramsIngestion:     true,
+					skipOffsetting:                      true,
+				},
+				log.NewLogfmtLogger(os.Stderr),
+				nil,
+				&collectResultAppendable{app},
+				prometheus.NewRegistry(),
+			)
+			require.NoError(t, err)
+
+			require.NoError(t, scrapeManager.ApplyConfig(&config.Config{
+				GlobalConfig: config.GlobalConfig{
+					// Disable regular scrapes.
+					ScrapeInterval: model.Duration(9999 * time.Minute),
+					ScrapeTimeout:  model.Duration(5 * time.Second),
+					// Ensure the proto is chosen. We need proto as it's the only protocol
+					// with the CT parsing support.
+					ScrapeProtocols: []config.ScrapeProtocol{config.PrometheusProto},
+				},
+				ScrapeConfigs: []*config.ScrapeConfig{{JobName: "test"}},
+			}))
+
+			once := sync.Once{}
+			// Start fake HTTP target to that allow one scrape only.
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					fail := true // TODO(bwplotka): Kill or use?
+					once.Do(func() {
+						fail = false
+						w.Header().Set("Content-Type", `application/vnd.google.protobuf; proto=io.prometheus.client.MetricFamily; encoding=delimited`)
+
+						ctrType := dto.MetricType_HISTOGRAM
+						w.Write(protoMarshalDelimited(t, &dto.MetricFamily{
+							Name:   proto.String(mName),
+							Type:   &ctrType,
+							Metric: []*dto.Metric{{Histogram: tc.inputHistSample}},
+						}))
+					})
+
+					if fail {
+						w.WriteHeader(http.StatusInternalServerError)
+					}
+				}),
+			)
+			defer server.Close()
+
+			serverURL, err := url.Parse(server.URL)
+			require.NoError(t, err)
+
+			// Add fake target directly into tsets + reload. Normally users would use
+			// Manager.Run and wait for minimum 5s refresh interval.
+			scrapeManager.updateTsets(map[string][]*targetgroup.Group{
+				"test": {{
+					Targets: []model.LabelSet{{
+						model.SchemeLabel:  model.LabelValue(serverURL.Scheme),
+						model.AddressLabel: model.LabelValue(serverURL.Host),
+					}},
+				}},
+			})
+			scrapeManager.reload()
+
+			var got []histogramSample
+
+			// Wait for one scrape.
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+			defer cancel()
+			require.NoError(t, runutil.Retry(100*time.Millisecond, ctx.Done(), func() error {
+				app.mtx.Lock()
+				defer app.mtx.Unlock()
+
+				// Check if scrape happened and grab the relevant histograms, they have to be there - or it's a bug
+				// and it's not worth waiting.
+				for _, h := range app.resultHistograms {
+					if h.metric.Get(model.MetricNameLabel) == mName {
+						got = append(got, h)
+					}
+				}
+				if len(app.resultHistograms) > 0 {
+					return nil
+				}
+				return fmt.Errorf("expected some histogram samples, got none")
+			}), "after 1 minute")
+			scrapeManager.Stop()
+
+			// Check for zero samples, assuming we only injected always one histogram sample.
+			// Did it contain CT to inject? If yes, was CT zero enabled?
+			if tc.inputHistSample.CreatedTimestamp.IsValid() && tc.enableCTZeroIngestion {
+				require.Len(t, got, 2)
+				// Zero sample.
+				require.Equal(t, histogram.Histogram{}, *got[0].h)
+				// Quick soft check to make sure it's the same sample or at least not zero.
+				require.Equal(t, tc.inputHistSample.GetSampleSum(), got[1].h.Sum)
+				return
+			}
+
+			// Expect only one, valid sample.
+			require.Len(t, got, 1)
+			// Quick soft check to make sure it's the same sample or at least not zero.
+			require.Equal(t, tc.inputHistSample.GetSampleSum(), got[0].h.Sum)
+		})
 	}
-	return result
 }
 
 func TestUnregisterMetrics(t *testing.T) {
@@ -862,10 +1033,422 @@ func TestUnregisterMetrics(t *testing.T) {
 	// Check that all metrics can be unregistered, allowing a second manager to be created.
 	for i := 0; i < 2; i++ {
 		opts := Options{}
-		manager, err := NewManager(&opts, nil, nil, reg)
+		manager, err := NewManager(&opts, nil, nil, nil, reg)
 		require.NotNil(t, manager)
 		require.NoError(t, err)
 		// Unregister all metrics.
 		manager.UnregisterMetrics()
 	}
+}
+
+func applyConfig(
+	t *testing.T,
+	config string,
+	scrapeManager *Manager,
+	discoveryManager *discovery.Manager,
+) {
+	t.Helper()
+
+	cfg := loadConfiguration(t, config)
+	require.NoError(t, scrapeManager.ApplyConfig(cfg))
+
+	c := make(map[string]discovery.Configs)
+	scfgs, err := cfg.GetScrapeConfigs()
+	require.NoError(t, err)
+	for _, v := range scfgs {
+		c[v.JobName] = v.ServiceDiscoveryConfigs
+	}
+	require.NoError(t, discoveryManager.ApplyConfig(c))
+}
+
+func runManagers(t *testing.T, ctx context.Context) (*discovery.Manager, *Manager) {
+	t.Helper()
+
+	reg := prometheus.NewRegistry()
+	sdMetrics, err := discovery.RegisterSDMetrics(reg, discovery.NewRefreshMetrics(reg))
+	require.NoError(t, err)
+	discoveryManager := discovery.NewManager(
+		ctx,
+		log.NewNopLogger(),
+		reg,
+		sdMetrics,
+		discovery.Updatert(100*time.Millisecond),
+	)
+	scrapeManager, err := NewManager(
+		&Options{DiscoveryReloadInterval: model.Duration(100 * time.Millisecond)},
+		nil,
+		nil,
+		nopAppendable{},
+		prometheus.NewRegistry(),
+	)
+	require.NoError(t, err)
+	go discoveryManager.Run()
+	go scrapeManager.Run(discoveryManager.SyncCh())
+	return discoveryManager, scrapeManager
+}
+
+func writeIntoFile(t *testing.T, content, filePattern string) *os.File {
+	t.Helper()
+
+	file, err := os.CreateTemp("", filePattern)
+	require.NoError(t, err)
+	_, err = file.WriteString(content)
+	require.NoError(t, err)
+	return file
+}
+
+func requireTargets(
+	t *testing.T,
+	scrapeManager *Manager,
+	jobName string,
+	waitToAppear bool,
+	expectedTargets []string,
+) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		targets, ok := scrapeManager.TargetsActive()[jobName]
+		if !ok {
+			if waitToAppear {
+				return false
+			}
+			t.Fatalf("job %s shouldn't be dropped", jobName)
+		}
+		if expectedTargets == nil {
+			return targets == nil
+		}
+		if len(targets) != len(expectedTargets) {
+			return false
+		}
+		sTargets := []string{}
+		for _, t := range targets {
+			sTargets = append(sTargets, t.String())
+		}
+		sort.Strings(expectedTargets)
+		sort.Strings(sTargets)
+		for i, t := range sTargets {
+			if t != expectedTargets[i] {
+				return false
+			}
+		}
+		return true
+	}, 1*time.Second, 100*time.Millisecond)
+}
+
+// TestTargetDisappearsAfterProviderRemoved makes sure that when a provider is dropped, (only) its targets are dropped.
+func TestTargetDisappearsAfterProviderRemoved(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	myJob := "my-job"
+	myJobSDTargetURL := "my:9876"
+	myJobStaticTargetURL := "my:5432"
+
+	sdFileContent := fmt.Sprintf(`[{"targets": ["%s"]}]`, myJobSDTargetURL)
+	sDFile := writeIntoFile(t, sdFileContent, "*targets.json")
+
+	baseConfig := `
+scrape_configs:
+- job_name: %s
+  static_configs:
+  - targets: ['%s']
+  file_sd_configs:
+  - files: ['%s']
+`
+
+	discoveryManager, scrapeManager := runManagers(t, ctx)
+	defer scrapeManager.Stop()
+
+	applyConfig(
+		t,
+		fmt.Sprintf(
+			baseConfig,
+			myJob,
+			myJobStaticTargetURL,
+			sDFile.Name(),
+		),
+		scrapeManager,
+		discoveryManager,
+	)
+	// Make sure the jobs targets are taken into account
+	requireTargets(
+		t,
+		scrapeManager,
+		myJob,
+		true,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", myJobSDTargetURL),
+			fmt.Sprintf("http://%s/metrics", myJobStaticTargetURL),
+		},
+	)
+
+	// Apply a new config where a provider is removed
+	baseConfig = `
+scrape_configs:
+- job_name: %s
+  static_configs:
+  - targets: ['%s']
+`
+	applyConfig(
+		t,
+		fmt.Sprintf(
+			baseConfig,
+			myJob,
+			myJobStaticTargetURL,
+		),
+		scrapeManager,
+		discoveryManager,
+	)
+	// Make sure the corresponding target was dropped
+	requireTargets(
+		t,
+		scrapeManager,
+		myJob,
+		false,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", myJobStaticTargetURL),
+		},
+	)
+
+	// Apply a new config with no providers
+	baseConfig = `
+scrape_configs:
+- job_name: %s
+`
+	applyConfig(
+		t,
+		fmt.Sprintf(
+			baseConfig,
+			myJob,
+		),
+		scrapeManager,
+		discoveryManager,
+	)
+	// Make sure the corresponding target was dropped
+	requireTargets(
+		t,
+		scrapeManager,
+		myJob,
+		false,
+		nil,
+	)
+}
+
+// TestOnlyProviderStaleTargetsAreDropped makes sure that when a job has only one provider with multiple targets
+// and when the provider can no longer discover some of those targets, only those stale targets are dropped.
+func TestOnlyProviderStaleTargetsAreDropped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobName := "my-job"
+	jobTarget1URL := "foo:9876"
+	jobTarget2URL := "foo:5432"
+
+	sdFile1Content := fmt.Sprintf(`[{"targets": ["%s"]}]`, jobTarget1URL)
+	sdFile2Content := fmt.Sprintf(`[{"targets": ["%s"]}]`, jobTarget2URL)
+	sDFile1 := writeIntoFile(t, sdFile1Content, "*targets.json")
+	sDFile2 := writeIntoFile(t, sdFile2Content, "*targets.json")
+
+	baseConfig := `
+scrape_configs:
+- job_name: %s
+  file_sd_configs:
+  - files: ['%s', '%s']
+`
+	discoveryManager, scrapeManager := runManagers(t, ctx)
+	defer scrapeManager.Stop()
+
+	applyConfig(
+		t,
+		fmt.Sprintf(baseConfig, jobName, sDFile1.Name(), sDFile2.Name()),
+		scrapeManager,
+		discoveryManager,
+	)
+
+	// Make sure the job's targets are taken into account
+	requireTargets(
+		t,
+		scrapeManager,
+		jobName,
+		true,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", jobTarget1URL),
+			fmt.Sprintf("http://%s/metrics", jobTarget2URL),
+		},
+	)
+
+	// Apply the same config for the same job but with a non existing file to make the provider
+	// unable to discover some targets
+	applyConfig(
+		t,
+		fmt.Sprintf(baseConfig, jobName, sDFile1.Name(), "/idontexistdoi.json"),
+		scrapeManager,
+		discoveryManager,
+	)
+
+	// The old target should get dropped
+	requireTargets(
+		t,
+		scrapeManager,
+		jobName,
+		false,
+		[]string{fmt.Sprintf("http://%s/metrics", jobTarget1URL)},
+	)
+}
+
+// TestProviderStaleTargetsAreDropped makes sure that when a job has only one provider and when that provider
+// should no longer discover targets, the targets of that provider are dropped.
+// See: https://github.com/prometheus/prometheus/issues/12858
+func TestProviderStaleTargetsAreDropped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobName := "my-job"
+	jobTargetURL := "foo:9876"
+
+	sdFileContent := fmt.Sprintf(`[{"targets": ["%s"]}]`, jobTargetURL)
+	sDFile := writeIntoFile(t, sdFileContent, "*targets.json")
+
+	baseConfig := `
+scrape_configs:
+- job_name: %s
+  file_sd_configs:
+  - files: ['%s']
+`
+	discoveryManager, scrapeManager := runManagers(t, ctx)
+	defer scrapeManager.Stop()
+
+	applyConfig(
+		t,
+		fmt.Sprintf(baseConfig, jobName, sDFile.Name()),
+		scrapeManager,
+		discoveryManager,
+	)
+
+	// Make sure the job's targets are taken into account
+	requireTargets(
+		t,
+		scrapeManager,
+		jobName,
+		true,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", jobTargetURL),
+		},
+	)
+
+	// Apply the same config for the same job but with a non existing file to make the provider
+	// unable to discover some targets
+	applyConfig(
+		t,
+		fmt.Sprintf(baseConfig, jobName, "/idontexistdoi.json"),
+		scrapeManager,
+		discoveryManager,
+	)
+
+	// The old target should get dropped
+	requireTargets(
+		t,
+		scrapeManager,
+		jobName,
+		false,
+		nil,
+	)
+}
+
+// TestOnlyStaleTargetsAreDropped makes sure that when a job has multiple providers, when one of them should no
+// longer discover targets, only the stale targets of that provider are dropped.
+func TestOnlyStaleTargetsAreDropped(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	myJob := "my-job"
+	myJobSDTargetURL := "my:9876"
+	myJobStaticTargetURL := "my:5432"
+	otherJob := "other-job"
+	otherJobTargetURL := "other:1234"
+
+	sdFileContent := fmt.Sprintf(`[{"targets": ["%s"]}]`, myJobSDTargetURL)
+	sDFile := writeIntoFile(t, sdFileContent, "*targets.json")
+
+	baseConfig := `
+scrape_configs:
+- job_name: %s
+  static_configs:
+  - targets: ['%s']
+  file_sd_configs:
+  - files: ['%s']
+- job_name: %s
+  static_configs:
+  - targets: ['%s']
+`
+
+	discoveryManager, scrapeManager := runManagers(t, ctx)
+	defer scrapeManager.Stop()
+
+	// Apply the initial config with an existing file
+	applyConfig(
+		t,
+		fmt.Sprintf(
+			baseConfig,
+			myJob,
+			myJobStaticTargetURL,
+			sDFile.Name(),
+			otherJob,
+			otherJobTargetURL,
+		),
+		scrapeManager,
+		discoveryManager,
+	)
+	// Make sure the jobs targets are taken into account
+	requireTargets(
+		t,
+		scrapeManager,
+		myJob,
+		true,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", myJobSDTargetURL),
+			fmt.Sprintf("http://%s/metrics", myJobStaticTargetURL),
+		},
+	)
+	requireTargets(
+		t,
+		scrapeManager,
+		otherJob,
+		true,
+		[]string{fmt.Sprintf("http://%s/metrics", otherJobTargetURL)},
+	)
+
+	// Apply the same config with a non existing file for myJob
+	applyConfig(
+		t,
+		fmt.Sprintf(
+			baseConfig,
+			myJob,
+			myJobStaticTargetURL,
+			"/idontexistdoi.json",
+			otherJob,
+			otherJobTargetURL,
+		),
+		scrapeManager,
+		discoveryManager,
+	)
+
+	// Only the SD target should get dropped for myJob
+	requireTargets(
+		t,
+		scrapeManager,
+		myJob,
+		false,
+		[]string{
+			fmt.Sprintf("http://%s/metrics", myJobStaticTargetURL),
+		},
+	)
+	// The otherJob should keep its target
+	requireTargets(
+		t,
+		scrapeManager,
+		otherJob,
+		false,
+		[]string{fmt.Sprintf("http://%s/metrics", otherJobTargetURL)},
+	)
 }

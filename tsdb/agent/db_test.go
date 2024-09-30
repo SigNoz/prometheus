@@ -89,7 +89,7 @@ func createTestAgentDB(t testing.TB, reg prometheus.Registerer, opts *Options) *
 	t.Helper()
 
 	dbDir := t.TempDir()
-	rs := remote.NewStorage(log.NewNopLogger(), reg, startTime, dbDir, time.Second*30, nil)
+	rs := remote.NewStorage(log.NewNopLogger(), reg, startTime, dbDir, time.Second*30, nil, false)
 	t.Cleanup(func() {
 		require.NoError(t, rs.Close())
 	})
@@ -585,7 +585,7 @@ func TestLockfile(t *testing.T) {
 	tsdbutil.TestDirLockerUsage(t, func(t *testing.T, data string, createLock bool) (*tsdbutil.DirLocker, testutil.Closer) {
 		logger := log.NewNopLogger()
 		reg := prometheus.NewRegistry()
-		rs := remote.NewStorage(logger, reg, startTime, data, time.Second*30, nil)
+		rs := remote.NewStorage(logger, reg, startTime, data, time.Second*30, nil, false)
 		t.Cleanup(func() {
 			require.NoError(t, rs.Close())
 		})
@@ -605,7 +605,7 @@ func TestLockfile(t *testing.T) {
 
 func Test_ExistingWAL_NextRef(t *testing.T) {
 	dbDir := t.TempDir()
-	rs := remote.NewStorage(log.NewNopLogger(), nil, startTime, dbDir, time.Second*30, nil)
+	rs := remote.NewStorage(log.NewNopLogger(), nil, startTime, dbDir, time.Second*30, nil, false)
 	defer func() {
 		require.NoError(t, rs.Close())
 	}()
@@ -640,7 +640,9 @@ func Test_ExistingWAL_NextRef(t *testing.T) {
 	// Create a new storage and see what nextRef is initialized to.
 	db, err = Open(log.NewNopLogger(), nil, rs, dbDir, DefaultOptions())
 	require.NoError(t, err)
-	defer require.NoError(t, db.Close())
+	defer func() {
+		require.NoError(t, db.Close())
+	}()
 
 	require.Equal(t, uint64(seriesCount+histogramCount), db.nextRef.Load(), "nextRef should be equal to the number of series written across the entire WAL")
 }

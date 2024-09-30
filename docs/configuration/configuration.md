@@ -70,9 +70,12 @@ global:
 
   # How frequently to evaluate rules.
   [ evaluation_interval: <duration> | default = 1m ]
-                        
-  # Offset the rule evaluation timestamp of this particular group by the specified duration into the past to ensure the underlying metrics have been received.
-  # Metric availability delays are more likely to occur when Prometheus is running as a remote write target, but can also occur when there's anomalies with scraping.
+
+  # Offset the rule evaluation timestamp of this particular group by the
+  # specified duration into the past to ensure the underlying metrics have
+  # been received. Metric availability delays are more likely to occur when
+  # Prometheus is running as a remote write target, but can also occur when
+  # there's anomalies with scraping.
   [ rule_query_offset: <duration> | default = 0s ]
 
   # The labels to add to any time series or alerts when communicating with
@@ -84,33 +87,39 @@ global:
   # Reloading the configuration will reopen the file.
   [ query_log_file: <string> ]
 
+  # File to which scrape failures are logged.
+  # Reloading the configuration will reopen the file.
+  [ scrape_failure_log_file: <string> ]
+
   # An uncompressed response body larger than this many bytes will cause the
   # scrape to fail. 0 means no limit. Example: 100MB.
   # This is an experimental feature, this behaviour could
   # change or be removed in the future.
   [ body_size_limit: <size> | default = 0 ]
 
-  # Per-scrape limit on number of scraped samples that will be accepted.
+  # Per-scrape limit on the number of scraped samples that will be accepted.
   # If more than this number of samples are present after metric relabeling
   # the entire scrape will be treated as failed. 0 means no limit.
   [ sample_limit: <int> | default = 0 ]
 
-  # Per-scrape limit on number of labels that will be accepted for a sample. If
-  # more than this number of labels are present post metric-relabeling, the
-  # entire scrape will be treated as failed. 0 means no limit.
+  # Limit on the number of labels that will be accepted per sample. If more
+  # than this number of labels are present on any sample post metric-relabeling,
+  # the entire scrape will be treated as failed. 0 means no limit.
   [ label_limit: <int> | default = 0 ]
 
-  # Per-scrape limit on length of labels name that will be accepted for a sample.
-  # If a label name is longer than this number post metric-relabeling, the entire
-  # scrape will be treated as failed. 0 means no limit.
+  # Limit on the length (in bytes) of each individual label name. If any label
+  # name in a scrape is longer than this number post metric-relabeling, the
+  # entire scrape will be treated as failed. Note that label names are UTF-8
+  # encoded, and characters can take up to 4 bytes. 0 means no limit.
   [ label_name_length_limit: <int> | default = 0 ]
 
-  # Per-scrape limit on length of labels value that will be accepted for a sample.
-  # If a label value is longer than this number post metric-relabeling, the
-  # entire scrape will be treated as failed. 0 means no limit.
+  # Limit on the length (in bytes) of each individual label value. If any label
+  # value in a scrape is longer than this number post metric-relabeling, the
+  # entire scrape will be treated as failed. Note that label values are UTF-8
+  # encoded, and characters can take up to 4 bytes. 0 means no limit.
   [ label_value_length_limit: <int> | default = 0 ]
 
-  # Per-scrape config limit on number of unique targets that will be
+  # Limit per scrape config on number of unique targets that will be
   # accepted. If more than this number of targets are present after target
   # relabeling, Prometheus will mark the targets as failed without scraping them.
   # 0 means no limit. This is an experimental feature, this behaviour could
@@ -120,6 +129,11 @@ global:
   # Limit per scrape config on the number of targets dropped by relabeling
   # that will be kept in memory. 0 means no limit.
   [ keep_dropped_targets: <int> | default = 0 ]
+
+  # Specifies the validation scheme for metric and label names. Either blank or
+  # "utf8" for for full UTF-8 support, or "legacy" for letters, numbers, colons,
+  # and underscores.
+  [ metric_name_validation_scheme <string> | default "utf8" ]
 
 runtime:
   # Configure the Go garbage collector GOGC parameter
@@ -151,6 +165,10 @@ alerting:
 # Settings related to the remote write feature.
 remote_write:
   [ - <remote_write> ... ]
+
+# Settings related to the OTLP receiver feature.
+otlp:
+  [ promote_resource_attributes: [<string>, ...] | default = [ ] ]
 
 # Settings related to the remote read feature.
 remote_read:
@@ -253,9 +271,11 @@ params:
 
 # Sets the `Authorization` header on every scrape request with the
 # configured username and password.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -298,6 +318,21 @@ tls_config:
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
+
+# File to which scrape failures are logged.
+# Reloading the configuration will reopen the file.
+[ scrape_failure_log_file: <string> ]
 
 # List of Azure service discovery configurations.
 azure_sd_configs:
@@ -426,45 +461,54 @@ metric_relabel_configs:
 # change or be removed in the future.
 [ body_size_limit: <size> | default = 0 ]
 
-# Per-scrape limit on number of scraped samples that will be accepted.
+# Per-scrape limit on the number of scraped samples that will be accepted.
 # If more than this number of samples are present after metric relabeling
 # the entire scrape will be treated as failed. 0 means no limit.
 [ sample_limit: <int> | default = 0 ]
 
-# Per-scrape limit on number of labels that will be accepted for a sample. If
-# more than this number of labels are present post metric-relabeling, the
-# entire scrape will be treated as failed. 0 means no limit.
+# Limit on the number of labels that will be accepted per sample. If more
+# than this number of labels are present on any sample post metric-relabeling,
+# the entire scrape will be treated as failed. 0 means no limit.
 [ label_limit: <int> | default = 0 ]
 
-# Per-scrape limit on length of labels name that will be accepted for a sample.
-# If a label name is longer than this number post metric-relabeling, the entire
-# scrape will be treated as failed. 0 means no limit.
+# Limit on the length (in bytes) of each individual label name. If any label
+# name in a scrape is longer than this number post metric-relabeling, the
+# entire scrape will be treated as failed. Note that label names are UTF-8
+# encoded, and characters can take up to 4 bytes. 0 means no limit.
 [ label_name_length_limit: <int> | default = 0 ]
 
-# Per-scrape limit on length of labels value that will be accepted for a sample.
-# If a label value is longer than this number post metric-relabeling, the
-# entire scrape will be treated as failed. 0 means no limit.
+# Limit on the length (in bytes) of each individual label value. If any label
+# value in a scrape is longer than this number post metric-relabeling, the
+# entire scrape will be treated as failed. Note that label values are UTF-8
+# encoded, and characters can take up to 4 bytes. 0 means no limit.
 [ label_value_length_limit: <int> | default = 0 ]
 
-# Per-scrape config limit on number of unique targets that will be
+# Limit per scrape config on number of unique targets that will be
 # accepted. If more than this number of targets are present after target
 # relabeling, Prometheus will mark the targets as failed without scraping them.
 # 0 means no limit. This is an experimental feature, this behaviour could
 # change in the future.
 [ target_limit: <int> | default = 0 ]
 
-# Per-job limit on the number of targets dropped by relabeling
+# Limit per scrape config on the number of targets dropped by relabeling
 # that will be kept in memory. 0 means no limit.
 [ keep_dropped_targets: <int> | default = 0 ]
 
+# Specifies the validation scheme for metric and label names. Either blank or 
+# "utf8" for full UTF-8 support, or "legacy" for letters, numbers, colons, and
+# underscores.
+[ metric_name_validation_scheme <string> | default "utf8" ]
+
 # Limit on total number of positive and negative buckets allowed in a single
-# native histogram. If this is exceeded, the entire scrape will be treated as
-# failed. 0 means no limit.
+# native histogram. The resolution of a histogram with more buckets will be
+# reduced until the number of buckets is within the limit. If the limit cannot
+# be reached, the scrape will fail.
+# 0 means no limit.
 [ native_histogram_bucket_limit: <int> | default = 0 ]
 
 # Lower limit for the growth factor of one bucket to the next in each native
 # histogram. The resolution of a histogram with a lower growth factor will be
-# reduced until it is within the limit.
+# reduced as much as possible until it is within the limit.
 # To set an upper limit for the schema (equivalent to "scale" in OTel's
 # exponential histograms), use the following factor limits:
 # 
@@ -581,6 +625,18 @@ tls_config:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 ```
 
 ### `<azure_sd_config>`
@@ -637,11 +693,13 @@ subscription_id: <string>
 # Authentication information used to authenticate to the Azure API.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information, currently not support by Azure.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -671,6 +729,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -750,11 +820,13 @@ tags:
 # Authentication information used to authenticate to the consul server.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -784,6 +856,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -836,11 +920,13 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information, not currently supported by DigitalOcean.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -871,6 +957,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -930,6 +1028,18 @@ host: <string>
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
+
 # TLS configuration.
 tls_config:
   [ <tls_config> ]
@@ -940,6 +1050,11 @@ tls_config:
 
 # The host to use if the container is in host networking mode.
 [ host_networking_host: <string> | default = "localhost" ]
+
+# Sort all non-nil networks in ascending order based on network name and
+# get the first network if the container has multiple networks defined, 
+# thus avoiding collecting duplicate targets.
+[ match_first_network: <boolean> | default = true ]
 
 # Optional filters to limit the discovery process to a subset of available
 # resources.
@@ -955,11 +1070,13 @@ tls_config:
 # Authentication information used to authenticate to the Docker daemon.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1105,6 +1222,18 @@ host: <string>
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
+
 # TLS configuration.
 tls_config:
   [ <tls_config> ]
@@ -1132,11 +1261,13 @@ role: <string>
 # Authentication information used to authenticate to the Docker daemon.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1229,6 +1360,7 @@ The following meta labels are available on targets during [relabeling](#relabel_
 * `__meta_ec2_ipv6_addresses`: comma separated list of IPv6 addresses assigned to the instance's network interfaces, if present
 * `__meta_ec2_owner_id`: the ID of the AWS account that owns the EC2 instance
 * `__meta_ec2_platform`: the Operating System platform, set to 'windows' on Windows servers, absent otherwise
+* `__meta_ec2_primary_ipv6_addresses`: comma separated list of the Primary IPv6 addresses of the instance, if present. The list is ordered based on the position of each corresponding network interface in the attachment order.
 * `__meta_ec2_primary_subnet_id`: the subnet ID of the primary network interface, if available
 * `__meta_ec2_private_dns_name`: the private DNS name of the instance, if available
 * `__meta_ec2_private_ip`: the private IP address of the instance, if present
@@ -1278,11 +1410,13 @@ filters:
 # Authentication information used to authenticate to the EC2 API.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information, currently not supported by AWS.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1294,7 +1428,7 @@ authorization:
   # `credentials_file`.
   [ credentials: <secret> ]
   # Sets the credentials to the credentials read from the configured file.
-  # It is mutuall exclusive with `credentials`.
+  # It is mutually exclusive with `credentials`.
   [ credentials_file: <filename> ]
 
 # Optional OAuth 2.0 configuration, currently not supported by AWS.
@@ -1312,6 +1446,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -1359,7 +1505,7 @@ interface.
 The following meta labels are available on targets during [relabeling](#relabel_config):
 
 * `__meta_openstack_address_pool`: the pool of the private IP.
-* `__meta_openstack_instance_flavor`: the flavor ID of the OpenStack instance.
+* `__meta_openstack_instance_flavor`: the flavor name of the OpenStack instance, or the flavor ID if the flavor name isn't available.
 * `__meta_openstack_instance_id`: the OpenStack instance ID.
 * `__meta_openstack_instance_image`: the ID of the image the OpenStack instance is using.
 * `__meta_openstack_instance_name`: the OpenStack instance name.
@@ -1559,6 +1705,7 @@ tls_config:
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1589,6 +1736,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -1778,12 +1937,14 @@ role: <string>
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information, required when role is robot
 # Role hcloud does not support basic auth.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1815,6 +1976,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -1875,11 +2048,13 @@ url: <string>
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1909,6 +2084,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -1955,12 +2142,14 @@ datacenter_id: <string>
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information, required when using IONOS
 # Cloud username and password as authentication method.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -1992,6 +2181,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -2125,6 +2326,8 @@ The `endpointslice` role discovers targets from existing endpointslices. For eac
 address referenced in the endpointslice object one target is discovered. If the endpoint is backed by a pod, all
 additional container ports of the pod, not bound to an endpoint port, are discovered as targets as well.
 
+The role requires the `discovery.k8s.io/v1` API version (available since Kubernetes v1.21).
+
 Available meta labels:
 
 * `__meta_kubernetes_namespace`: The namespace of the endpoints object.
@@ -2145,7 +2348,7 @@ Available meta labels:
   * `__meta_kubernetes_endpointslice_endpoint_topology_present_kubernetes_io_hostname`: Flag that shows if the referenced object has a kubernetes.io/hostname annotation.
   * `__meta_kubernetes_endpointslice_endpoint_hostname`: Hostname of the referenced endpoint.
   * `__meta_kubernetes_endpointslice_endpoint_node_name`: Name of the Node hosting the referenced endpoint.
-  * `__meta_kubernetes_endpointslice_endpoint_zone`: Zone the referenced endpoint exists in (only available when using the `discovery.k8s.io/v1` API group).
+  * `__meta_kubernetes_endpointslice_endpoint_zone`: Zone the referenced endpoint exists in.
   * `__meta_kubernetes_endpointslice_port`: Port of the referenced endpoint.
   * `__meta_kubernetes_endpointslice_port_name`: Named port of the referenced endpoint.
   * `__meta_kubernetes_endpointslice_port_protocol`: Protocol of the referenced endpoint.
@@ -2157,6 +2360,8 @@ Available meta labels:
 The `ingress` role discovers a target for each path of each ingress.
 This is generally useful for blackbox monitoring of an ingress.
 The address will be set to the host specified in the ingress spec.
+
+The role requires the `networking.k8s.io/v1` API version (available since Kubernetes v1.19).
 
 Available meta labels:
 
@@ -2191,11 +2396,13 @@ role: <string>
 
 # Optional authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2226,6 +2433,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -2318,6 +2537,18 @@ server: <string>
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
+
 # TLS configuration.
 tls_config:
   [ <tls_config> ]
@@ -2325,11 +2556,13 @@ tls_config:
 # Authentication information used to authenticate to the Docker daemon.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2410,11 +2643,13 @@ See below for the configuration options for Lightsail discovery:
 # Authentication information used to authenticate to the Lightsail API.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information, currently not supported by AWS.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2426,7 +2661,7 @@ authorization:
   # `credentials_file`.
   [ credentials: <secret> ]
   # Sets the credentials to the credentials read from the configured file.
-  # It is mutuall exclusive with `credentials`.
+  # It is mutually exclusive with `credentials`.
   [ credentials_file: <filename> ]
 
 # Optional OAuth 2.0 configuration, currently not supported by AWS.
@@ -2444,6 +2679,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -2494,12 +2741,14 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 # Note: Linode APIv4 Token must be created with scopes: 'linodes:read_only', 'ips:read_only', and 'events:read_only'
 
 # Optional HTTP basic authentication information, not currently supported by Linode APIv4.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2533,6 +2782,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -2595,9 +2856,11 @@ servers:
 # Sets the `Authorization` header on every request with the
 # configured username and password.
 # This is mutually exclusive with other authentication mechanisms.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2641,6 +2904,18 @@ tls_config:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 ```
 
 By default every app listed in Marathon will be scraped by Prometheus. If not all
@@ -2705,11 +2980,13 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # Authentication information used to authenticate to the nomad server.
 # Note that `basic_auth`, `authorization` and `oauth2` options are
 # mutually exclusive.
+# `username` and `username_file` are mutually exclusive.
 # `password` and `password_file` are mutually exclusive.
 
 # Optional HTTP basic authentication information.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2739,6 +3016,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -2888,9 +3177,11 @@ server: <string>
 
 # Sets the `Authorization` header on every request with the
 # configured username and password.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -2925,6 +3216,18 @@ tls_config:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -3052,6 +3355,18 @@ tags_filter:
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
 
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
+
 # TLS configuration.
 tls_config:
   [ <tls_config> ]
@@ -3097,6 +3412,7 @@ password: <secret>
 # Optional HTTP basic authentication information, currently not supported by Uyuni.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -3127,6 +3443,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -3174,11 +3502,13 @@ The following meta labels are available on targets during [relabeling](#relabel_
 # Authentication information used to authenticate to the API server.
 # Note that `basic_auth` and `authorization` options are
 # mutually exclusive.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 
 # Optional HTTP basic authentication information, not currently supported by Vultr.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -3209,6 +3539,18 @@ oauth2:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -3255,12 +3597,16 @@ Initially, aside from the configured per-target labels, a target's `job`
 label is set to the `job_name` value of the respective scrape configuration.
 The `__address__` label is set to the `<host>:<port>` address of the target.
 After relabeling, the `instance` label is set to the value of `__address__` by default if
-it was not set during relabeling. The `__scheme__` and `__metrics_path__` labels
-are set to the scheme and metrics path of the target respectively. The `__param_<name>`
-label is set to the value of the first passed URL parameter called `<name>`.
+it was not set during relabeling.
+
+The `__scheme__` and `__metrics_path__` labels
+are set to the scheme and metrics path of the target respectively, as specified in `scrape_config`.
+
+The `__param_<name>`
+label is set to the value of the first passed URL parameter called `<name>`, as defined in `scrape_config`.
 
 The `__scrape_interval__` and `__scrape_timeout__` labels are set to the target's
-interval and timeout.
+interval and timeout, as specified in `scrape_config`.
 
 Additional labels prefixed with `__meta_` may be available during the
 relabeling phase. They are set by the service discovery mechanism that provided
@@ -3374,9 +3720,11 @@ through the `__alerts_path__` label.
 
 # Sets the `Authorization` header on every request with the
 # configured username and password.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -3391,8 +3739,8 @@ authorization:
   # It is mutually exclusive with `credentials`.
   [ credentials_file: <filename> ]
 
-# Optionally configures AWS's Signature Verification 4 signing process to
-# sign requests. Cannot be set at the same time as basic_auth, authorization, or oauth2.
+# Optionally configures AWS's Signature Verification 4 signing process to sign requests.
+# Cannot be set at the same time as basic_auth, authorization, oauth2, azuread or google_iam.
 # To use the default credentials from the AWS SDK, use `sigv4: {}`.
 sigv4:
   # The AWS region. If blank, the region from the default credentials chain
@@ -3430,6 +3778,18 @@ tls_config:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
@@ -3571,6 +3931,17 @@ this functionality.
 # The URL of the endpoint to send samples to.
 url: <string>
 
+# protobuf message to use when writing to the remote write endpoint.
+#
+# * The `prometheus.WriteRequest` represents the message introduced in Remote Write 1.0, which
+# will be deprecated eventually.
+# * The `io.prometheus.write.v2.Request` was introduced in Remote Write 2.0 and replaces the former,
+# by improving efficiency and sending metadata, created timestamp and native histograms by default.
+#
+# Before changing this value, consult with your remote storage provider (or test) what message it supports.
+# Read more on https://prometheus.io/docs/specs/remote_write_spec_2_0/#io-prometheus-write-v2-request
+[ protobuf_message: <prometheus.WriteRequest | io.prometheus.write.v2.Request> | default = prometheus.WriteRequest ]
+
 # Timeout for requests to the remote write endpoint.
 [ remote_timeout: <duration> | default = 30s ]
 
@@ -3592,20 +3963,23 @@ write_relabel_configs:
 [ send_exemplars: <boolean> | default = false ]
 
 # Enables sending of native histograms, also known as sparse histograms, over remote write.
+# For the `io.prometheus.write.v2.Request` message, this option is noop (always true).
 [ send_native_histograms: <boolean> | default = false ]
 
 # Sets the `Authorization` header on every remote write request with the
 # configured username and password.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
 # Optional `Authorization` header configuration.
 authorization:
   # Sets the authentication type.
-  [ type: <string> | default: Bearer ]
+  [ type: <string> | default = Bearer ]
   # Sets the credentials. It is mutually exclusive with
   # `credentials_file`.
   [ credentials: <secret> ]
@@ -3633,12 +4007,12 @@ sigv4:
   [ role_arn: <string> ]
 
 # Optional OAuth 2.0 configuration.
-# Cannot be used at the same time as basic_auth, authorization, sigv4, or azuread.
+# Cannot be used at the same time as basic_auth, authorization, sigv4, azuread or google_iam.
 oauth2:
   [ <oauth2> ]
 
 # Optional AzureAD configuration.
-# Cannot be used at the same time as basic_auth, authorization, oauth2, or sigv4.
+# Cannot be used at the same time as basic_auth, authorization, oauth2, sigv4 or google_iam.
 azuread:
   # The Azure Cloud. Options are 'AzurePublic', 'AzureChina', or 'AzureGovernment'.
   [ cloud: <string> | default = AzurePublic ]
@@ -3658,6 +4032,14 @@ azuread:
   [ sdk:
       [ tenant_id: <string> ] ]
 
+# WARNING: Remote write is NOT SUPPORTED by Google Cloud. This configuration is reserved for future use.
+# Optional Google Cloud Monitoring configuration.
+# Cannot be used at the same time as basic_auth, authorization, oauth2, sigv4 or azuread.
+# To use the default credentials from the Google Cloud SDK, use `google_iam: {}`.
+google_iam:
+  # Service account key with monitoring write permissions.
+  credentials_file: <file_name>
+
 # Configures the remote write request's TLS settings.
 tls_config:
   [ <tls_config> ]
@@ -3669,16 +4051,28 @@ tls_config:
 # contain port numbers.
 [ no_proxy: <string> ]
 # Use proxy URL indicated by environment variables (HTTP_PROXY, https_proxy, HTTPs_PROXY, https_proxy, and no_proxy)
-[ proxy_from_environment: <boolean> | default: false ]
+[ proxy_from_environment: <boolean> | default = false ]
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
 
 # Whether to enable HTTP2.
-[ enable_http2: <boolean> | default: true ]
+[ enable_http2: <boolean> | default = true ]
 
 # Configures the queue used to write to remote storage.
 queue_config:
@@ -3708,7 +4102,10 @@ queue_config:
   # which means that all samples are sent.
   [ sample_age_limit: <duration> | default = 0s ]
 
-# Configures the sending of series metadata to remote storage.
+# Configures the sending of series metadata to remote storage
+# if the `prometheus.WriteRequest` message was chosen. When
+# `io.prometheus.write.v2.Request` is used, metadata is always sent.
+#
 # Metadata configuration is subject to change at any point
 # or be removed in future releases.
 metadata_config:
@@ -3754,9 +4151,11 @@ headers:
 
 # Sets the `Authorization` header on every remote read request with the
 # configured username and password.
+# username and username_file are mutually exclusive.
 # password and password_file are mutually exclusive.
 basic_auth:
   [ username: <string> ]
+  [ username_file: <string> ]
   [ password: <secret> ]
   [ password_file: <string> ]
 
@@ -3791,6 +4190,18 @@ tls_config:
 # Specifies headers to send to proxies during CONNECT requests.
 [ proxy_connect_header:
   [ <string>: [<secret>, ...] ] ]
+
+# Custom HTTP headers to be sent along with each request.
+# Headers that are set by Prometheus itself can't be overwritten.
+http_headers:
+  # Header name.
+  [ <string>:
+    # Header values.
+    [ values: [<string>, ...] ]
+    # Headers values. Hidden in configuration page.
+    [ secrets: [<secret>, ...] ]
+    # Files to read header values from.
+    [ files: [<string>, ...] ] ]
 
 # Configure whether HTTP requests follow HTTP 3xx redirects.
 [ follow_redirects: <boolean> | default = true ]
