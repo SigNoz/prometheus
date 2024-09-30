@@ -359,7 +359,11 @@ func (c *Client) Endpoint() string {
 func (c *Client) Read(ctx context.Context, query *prompb.Query, sortSeries bool) (storage.SeriesSet, error) {
 	c.readQueries.Inc()
 	defer c.readQueries.Dec()
-	return c.ch.Read(ctx, query)
+	queryResult, err := c.ch.Read(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return FromQueryResult(sortSeries, queryResult), nil
 
 	req := &prompb.ReadRequest{
 		// TODO: Support batching multiple queries into one read request,
